@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">AutoBridge</string>
+    <string name="accessibility_service_name">AutoBridge Code Relay</string>
+    <string name="accessibility_service_description">Monitors ChatGPT to automatically extract and copy code blocks, and monitors Termux to capture terminal outputs and forward them to ChatGPT.</string>
+</resources>

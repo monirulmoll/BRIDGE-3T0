@@ -1,0 +1,6 @@
+{
+  "name": "AutoBridge",
+  "description": "Accessibility service automation bridge that automatically detects and copies code from ChatGPT responses and relays Termux terminal outputs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
