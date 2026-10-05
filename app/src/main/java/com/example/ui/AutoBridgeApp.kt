@@ -800,6 +800,10 @@ fun DebugScreen(
                 DebugLine(label = "Output received", value = if (debugMetrics.outputReceived) "YES" else "NO", isPositive = debugMetrics.outputReceived)
                 DebugLine(label = "Send button", value = if (debugMetrics.sendButtonFound) "FOUND" else "NOT FOUND", isPositive = debugMetrics.sendButtonFound)
                 DebugLine(label = "Send action", value = if (debugMetrics.sendActionSuccess) "SUCCESS" else "FAILED", isPositive = debugMetrics.sendActionSuccess)
+                DebugLine(label = "Keyboard status", value = if (debugMetrics.keyboardOpen) "OPEN (Top Position)" else "CLOSED (Bottom Position)", isPositive = true)
+                if (debugMetrics.lastClickCoordinates.isNotBlank()) {
+                    DebugLine(label = "Last Click Coords", value = debugMetrics.lastClickCoordinates, isPositive = true)
+                }
                 HorizontalDivider(color = Slate800, modifier = Modifier.padding(vertical = 6.dp))
                 DebugLine(label = "BACKGROUND MODE", value = if (debugMetrics.backgroundMode) "ON" else "OFF", isPositive = debugMetrics.backgroundMode)
                 DebugLine(label = "CHATGPT FOREGROUND LAUNCH", value = if (debugMetrics.backgroundMode) "DISABLED" else "ENABLED", isPositive = !debugMetrics.backgroundMode)

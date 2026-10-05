@@ -199,30 +199,24 @@ class BridgeAccessibilityService : AccessibilityService() {
                 val currentInput = ChatGPTInteractionHelper.findInputField(updatedRoot)
                 val candidate = ChatGPTInteractionHelper.findSendButtonCandidate(updatedRoot, currentInput)
 
-                if (candidate != null) {
-                    val clicked = ChatGPTInteractionHelper.executeSendAction(this, candidate)
-                    mainHandler.postDelayed({
-                        val verifyRoot = rootInActiveWindow ?: updatedRoot
-                        val verifyInput = ChatGPTInteractionHelper.findInputField(verifyRoot)
-                        val remainingText = verifyInput?.text?.toString()?.trim().orEmpty()
-                        if (remainingText.isBlank() || remainingText != ChatGPTInteractionHelper.STARTUP_MESSAGE) {
-                            AutomationManager.markStartupMessageSent()
-                            AutomationManager.markSendActionResult(true)
-                            triggerVibration()
-                            Log.i(TAG, "BRIDGE START verified sent successfully!")
-                        } else {
-                            AutomationManager.log("Send verified: Input not cleared yet. Halting retry to prevent typing loop.")
-                            AutomationManager.markStartupMessageSent()
-                        }
-                        isSendingMessage = false
-                    }, 400)
-                } else {
-                    AutomationManager.markSendButtonStatus(false, "Send button not found")
-                    AutomationManager.markSendActionResult(false)
-                    // Do NOT repeatedly type the same message if sending fails!
-                    AutomationManager.markStartupMessageSent()
+                // Execute Send via Direct Coordinate Click (matching keyboard state) + Action
+                val clicked = ChatGPTInteractionHelper.executeSendAction(this, currentInput, candidate)
+
+                mainHandler.postDelayed({
+                    val verifyRoot = rootInActiveWindow ?: updatedRoot
+                    val verifyInput = ChatGPTInteractionHelper.findInputField(verifyRoot)
+                    val remainingText = verifyInput?.text?.toString()?.trim().orEmpty()
+                    if (remainingText.isBlank() || remainingText != ChatGPTInteractionHelper.STARTUP_MESSAGE) {
+                        AutomationManager.markStartupMessageSent()
+                        AutomationManager.markSendActionResult(true)
+                        triggerVibration()
+                        Log.i(TAG, "BRIDGE START verified sent successfully!")
+                    } else {
+                        AutomationManager.log("Send attempted at coordinates. Halting retry to prevent typing loop.")
+                        AutomationManager.markStartupMessageSent()
+                    }
                     isSendingMessage = false
-                }
+                }, 400)
             }, 350)
         } else {
             isSendingMessage = false
@@ -368,20 +362,14 @@ class BridgeAccessibilityService : AccessibilityService() {
                     val currentInput = ChatGPTInteractionHelper.findInputField(updatedRoot)
                     val candidate = ChatGPTInteractionHelper.findSendButtonCandidate(updatedRoot, currentInput)
 
-                    if (candidate != null) {
-                        val clicked = ChatGPTInteractionHelper.executeSendAction(this, candidate)
-                        mainHandler.postDelayed({
-                            pendingInputText = null
-                            isSendingMessage = false
-                            AutomationManager.markMessageSent(clicked)
-                            triggerVibration()
-                        }, 400)
-                    } else {
-                        AutomationManager.markSendButtonStatus(false, "Send button not found")
-                        pendingInputText = null // Do not repeatedly type!
+                    // Execute Send via Direct Coordinate Click (matching keyboard state) + Action
+                    val clicked = ChatGPTInteractionHelper.executeSendAction(this, currentInput, candidate)
+                    mainHandler.postDelayed({
+                        pendingInputText = null
                         isSendingMessage = false
-                        AutomationManager.markSendActionResult(false)
-                    }
+                        AutomationManager.markMessageSent(clicked)
+                        triggerVibration()
+                    }, 400)
                 }, 350)
             } else {
                 isSendingMessage = false

@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.example.state.AutomationManager
 
 data class SendButtonCandidate(
@@ -108,7 +109,6 @@ object ChatGPTInteractionHelper {
     /**
      * Finds the Send button corresponding to the screenshot:
      * A circular blue button with an upward arrow (↑) on the right side of the prompt input pill.
-     * Logs: package name, class name, text, contentDescription, viewIdResourceName, clickable, enabled, available actions
      */
     fun findSendButtonCandidate(root: AccessibilityNodeInfo?, inputField: AccessibilityNodeInfo?): SendButtonCandidate? {
         if (root == null) return null
@@ -144,7 +144,6 @@ object ChatGPTInteractionHelper {
 
             // 2. Positional alignment with the input field (as seen in the screenshot)
             if (inputBounds.width() > 0) {
-                // Should be horizontally to the right of the input field or near right side of screen
                 val isRightAligned = nodeBounds.centerX() >= inputBounds.centerX()
                 val isVerticallyAligned = Math.abs(nodeBounds.centerY() - inputBounds.centerY()) < 120
 
@@ -187,12 +186,10 @@ object ChatGPTInteractionHelper {
 
         val target = bestNode ?: return null
 
-        // Inspect parent or children to find the actual clickable/actionable node
         val actionable = findActionableNode(target)
         val bounds = Rect()
         actionable.getBoundsInScreen(bounds)
 
-        // Log detailed node metrics as explicitly requested in item 3
         val details = buildString {
             append("package=${actionable.packageName}, ")
             append("class=${actionable.className}, ")
@@ -217,15 +214,11 @@ object ChatGPTInteractionHelper {
         )
     }
 
-    /**
-     * Climbs up parents or inspects children to find the node with clickable/enabled state
-     */
     private fun findActionableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo {
         if (node.isClickable && node.isEnabled) {
             return node
         }
 
-        // Check parents
         var curr: AccessibilityNodeInfo? = node.parent
         var depth = 0
         while (curr != null && depth < 3) {
@@ -236,7 +229,6 @@ object ChatGPTInteractionHelper {
             depth++
         }
 
-        // Check children
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
             if (child != null && child.isClickable && child.isEnabled) {
@@ -248,44 +240,115 @@ object ChatGPTInteractionHelper {
     }
 
     /**
-     * Executes Send Action via ACTION_CLICK and fallback coordinate touch gesture
+     * Determines whether the soft keyboard is currently open on screen
      */
-    fun executeSendAction(service: AccessibilityService, candidate: SendButtonCandidate): Boolean {
-        // 1. Try standard Accessibility ACTION_CLICK
-        var clicked = candidate.actionableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    fun isKeyboardActive(service: AccessibilityService, inputField: AccessibilityNodeInfo?, screenHeight: Float): Boolean {
+        try {
+            val allWindows = service.windows
+            if (allWindows != null) {
+                for (window in allWindows) {
+                    if (window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
 
-        if (!clicked && candidate.targetNode != candidate.actionableNode) {
-            clicked = candidate.targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        }
-
-        // 2. If ACTION_CLICK was refused or not handled (e.g. React Native / Compose custom touch interception),
-        // dispatch direct gesture click at the center coordinates of the blue button
-        if (!clicked || candidate.bounds.width() > 0) {
-            val centerX = candidate.bounds.centerX().toFloat()
-            val centerY = candidate.bounds.centerY().toFloat()
-            if (centerX > 0 && centerY > 0) {
-                val gestureClicked = dispatchClickGesture(service, centerX, centerY)
-                if (gestureClicked) {
-                    clicked = true
+        // Check if input field is pushed up above 78% of the screen height
+        if (inputField != null) {
+            val bounds = Rect()
+            inputField.getBoundsInScreen(bounds)
+            if (bounds.height() > 0 && bounds.centerY() > 0) {
+                if (bounds.centerY() < screenHeight * 0.78f) {
+                    return true
                 }
             }
         }
 
-        return clicked
+        return false
     }
 
-    private fun dispatchClickGesture(service: AccessibilityService, x: Float, y: Float): Boolean {
+    /**
+     * Direct X, Y coordinate calculation based on Keyboard OPEN vs CLOSED:
+     * - Keyboard OPEN: Input bar is pushed up (Y ≈ 57.3% of screen height)
+     * - Keyboard CLOSED: Input bar is at the bottom (Y ≈ 94.0% of screen height)
+     * - X is centered on the blue circle at ~91.0% of screen width
+     */
+    fun calculateSendButtonCoordinates(
+        service: AccessibilityService,
+        inputField: AccessibilityNodeInfo?,
+        candidate: SendButtonCandidate?
+    ): Pair<Float, Float> {
+        val displayMetrics = service.resources.displayMetrics
+        val screenWidth = displayMetrics.widthPixels.toFloat()
+        val screenHeight = displayMetrics.heightPixels.toFloat()
+
+        val inputBounds = Rect()
+        inputField?.getBoundsInScreen(inputBounds)
+
+        val isKeyboardOpen = isKeyboardActive(service, inputField, screenHeight)
+        AutomationManager.markKeyboardStatus(isKeyboardOpen)
+
+        // X coordinate: Blue button center is near right edge (0.910 * screenWidth)
+        val clickX = when {
+            candidate != null && candidate.bounds.centerX() > 0 -> candidate.bounds.centerX().toFloat()
+            inputBounds.right > 0 -> (inputBounds.right - 24 * displayMetrics.density).coerceIn(screenWidth * 0.85f, screenWidth * 0.94f)
+            else -> screenWidth * 0.910f
+        }
+
+        // Y coordinate: Two exact states corresponding to user's screenshots
+        val clickY = when {
+            candidate != null && candidate.bounds.centerY() > 0 -> candidate.bounds.centerY().toFloat()
+            inputBounds.centerY() > 0 -> inputBounds.centerY().toFloat()
+            isKeyboardOpen -> screenHeight * 0.573f
+            else -> screenHeight * 0.940f
+        }
+
+        val logCoords = "X: ${clickX.toInt()}px (${(clickX / screenWidth * 100).toInt()}%), Y: ${clickY.toInt()}px (${(clickY / screenHeight * 100).toInt()}%) [Keyboard: ${if (isKeyboardOpen) "OPEN" else "CLOSED"}]"
+        AutomationManager.markClickCoordinates(logCoords)
+
+        return Pair(clickX, clickY)
+    }
+
+    /**
+     * Sends message via Direct X/Y Coordinate Click Gesture (with accessibility action backup)
+     */
+    fun executeSendAction(
+        service: AccessibilityService,
+        inputField: AccessibilityNodeInfo?,
+        candidate: SendButtonCandidate?
+    ): Boolean {
+        val (clickX, clickY) = calculateSendButtonCoordinates(service, inputField, candidate)
+
+        // 1. Direct touch gesture click at exact (clickX, clickY)
+        val gestureClicked = dispatchClickGesture(service, clickX, clickY)
+
+        // 2. Also trigger accessibility ACTION_CLICK on candidate node if found
+        if (candidate != null) {
+            candidate.actionableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (candidate.targetNode != candidate.actionableNode) {
+                candidate.targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+        }
+
+        return gestureClicked || candidate != null
+    }
+
+    fun dispatchClickGesture(service: AccessibilityService, x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 val clickPath = Path().apply {
                     moveTo(x, y)
                 }
+                val stroke = GestureDescription.StrokeDescription(clickPath, 0, 50)
                 val gesture = GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(clickPath, 0, 80))
+                    .addStroke(stroke)
                     .build()
-                return service.dispatchGesture(gesture, null, null)
+                val dispatched = service.dispatchGesture(gesture, null, null)
+                Log.d(TAG, "Direct click gesture dispatched at ($x, $y): $dispatched")
+                return dispatched
             } catch (e: Exception) {
-                Log.e(TAG, "Gesture click failed: ${e.message}")
+                Log.e(TAG, "Gesture click failed at ($x, $y): ${e.message}")
             }
         }
         return false

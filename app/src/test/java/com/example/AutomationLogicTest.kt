@@ -92,4 +92,19 @@ class AutomationLogicTest {
         AutomationManager.updateBackgroundMode(false)
         assertFalse(AutomationManager.debugMetrics.value.backgroundMode)
     }
+
+    @Test
+    fun `test keyboard state and coordinate tracking`() {
+        AutomationManager.markKeyboardStatus(true)
+        assertTrue(AutomationManager.debugMetrics.value.keyboardOpen)
+
+        AutomationManager.markClickCoordinates("X: 982px, Y: 1380px [Keyboard: OPEN]")
+        assertTrue(AutomationManager.debugMetrics.value.lastClickCoordinates.contains("Keyboard: OPEN"))
+
+        AutomationManager.markKeyboardStatus(false)
+        assertFalse(AutomationManager.debugMetrics.value.keyboardOpen)
+
+        AutomationManager.markClickCoordinates("X: 982px, Y: 2267px [Keyboard: CLOSED]")
+        assertTrue(AutomationManager.debugMetrics.value.lastClickCoordinates.contains("Keyboard: CLOSED"))
+    }
 }

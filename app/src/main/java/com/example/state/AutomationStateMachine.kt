@@ -27,6 +27,8 @@ data class DebugMetrics(
     val controllerConnected: Boolean = false,
     val commandSent: Boolean = false,
     val outputReceived: Boolean = false,
+    val keyboardOpen: Boolean = false,
+    val lastClickCoordinates: String = "",
     val sendButtonFound: Boolean = false,
     val sendActionSuccess: Boolean = false,
     val lastSendButtonDetails: String = "",
@@ -124,6 +126,15 @@ object AutomationManager {
             sendActionSuccess = success,
             messageSent = success
         )
+    }
+
+    fun markKeyboardStatus(open: Boolean) {
+        _debugMetrics.value = _debugMetrics.value.copy(keyboardOpen = open)
+    }
+
+    fun markClickCoordinates(coords: String) {
+        _debugMetrics.value = _debugMetrics.value.copy(lastClickCoordinates = coords)
+        log("Send Button Target Coordinates: $coords")
     }
 
     fun markChatGptDetected(detected: Boolean) {
