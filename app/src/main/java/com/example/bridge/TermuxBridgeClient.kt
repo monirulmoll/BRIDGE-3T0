@@ -11,7 +11,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class TermuxBridgeClient(
-    private val baseUrl: String = "http://127.0.0.1:8765"
+    val baseUrl: String = "http://127.0.0.1:8765"
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -22,6 +22,10 @@ class TermuxBridgeClient(
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    /**
+     * Dispatches command strictly to POST http://127.0.0.1:8765/run
+     * JSON payload: {"command":"..."}
+     */
     suspend fun executeCommand(command: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val payload = JSONObject().apply {
@@ -52,21 +56,25 @@ class TermuxBridgeClient(
         }
     }
 
+    /**
+     * Requirement: Test Controller Connection with exact command {"command": "echo BRIDGE_CONNECTION_OK"}
+     * Expected response: BRIDGE_CONNECTION_OK
+     */
+    suspend fun testController(): Result<String> {
+        val result = executeCommand("echo BRIDGE_CONNECTION_OK")
+        return result.map { output ->
+            if (output.contains("BRIDGE_CONNECTION_OK")) {
+                "BRIDGE_CONNECTION_OK"
+            } else {
+                output.trim()
+            }
+        }
+    }
+
     suspend fun pingBridge(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val pingClient = client.newBuilder()
-                .connectTimeout(2, TimeUnit.SECONDS)
-                .readTimeout(2, TimeUnit.SECONDS)
-                .build()
-
-            val request = Request.Builder()
-                .url(baseUrl)
-                .get()
-                .build()
-
-            pingClient.newCall(request).execute().use { response ->
-                return@withContext response.isSuccessful || response.code == 404 || response.code == 405
-            }
+            val res = testController()
+            res.isSuccess && res.getOrNull()?.contains("BRIDGE_CONNECTION_OK") == true
         } catch (_: Exception) {
             false
         }
@@ -91,5 +99,6 @@ class TermuxBridgeClient(
 
     companion object {
         private const val TAG = "TermuxBridgeClient"
+        const val CONTROLLER_URL = "http://127.0.0.1:8765"
     }
 }

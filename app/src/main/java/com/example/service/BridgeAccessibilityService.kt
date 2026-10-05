@@ -82,10 +82,11 @@ class BridgeAccessibilityService : AccessibilityService() {
         instance = this
         detectedChatGptPackage = ChatGPTInteractionHelper.detectChatGptPackage(this)
 
+        val settings = AutoBridgeApplication.instance.repository.currentSettings()
         AutomationManager.markAccessibility(true)
+        AutomationManager.updateBackgroundMode(settings.backgroundMode)
         AutomationManager.log("AccessibilityService Connected & Active (Package: $detectedChatGptPackage)")
 
-        val settings = AutoBridgeApplication.instance.repository.currentSettings()
         if (settings.screenOffExecution) {
             acquireWakeLock()
         }
@@ -135,12 +136,22 @@ class BridgeAccessibilityService : AccessibilityService() {
         AutomationManager.markChatGptDetected(isChatGpt)
 
         if (isChatGpt) {
-            val rootNode = rootInActiveWindow ?: return
-            handleChatGptWindow(rootNode)
+            val rootNode = rootInActiveWindow ?: findChatGptRootNode()
+            if (rootNode != null) {
+                handleChatGptWindow(rootNode, settings)
+            }
+        } else if (settings.backgroundMode) {
+            // In background mode, if there is pending input to ChatGPT, try finding interactive ChatGPT window
+            if (!pendingInputText.isNullOrBlank()) {
+                val gptRoot = findChatGptRootNode()
+                if (gptRoot != null) {
+                    attemptPasteAndSendToChatGpt(gptRoot)
+                }
+            }
         }
     }
 
-    private fun handleChatGptWindow(rootNode: AccessibilityNodeInfo) {
+    private fun handleChatGptWindow(rootNode: AccessibilityNodeInfo, settings: com.example.data.BridgeSettings) {
         val now = System.currentTimeMillis()
         if (now - lastInspectionTime < 400) return
         lastInspectionTime = now
@@ -168,27 +179,53 @@ class BridgeAccessibilityService : AccessibilityService() {
         }
     }
 
+    private var isSendingMessage: Boolean = false
+
     /**
-     * Requirement 6: Sends the exact startup message "BRIDGE START" on first app launch
+     * Requirement: Sends the exact startup message "BRIDGE START" on first app launch
+     * Finds the actual Send button matching the screenshot (blue circle with upward arrow),
+     * clicks the actionable node, verifies message sent, and prevents retyping.
      */
     private fun attemptSendStartupMessage(rootNode: AccessibilityNodeInfo) {
-        val inputField = ChatGPTInteractionHelper.findInputField(rootNode)
-        if (inputField != null) {
-            AutomationManager.markChatGptInputFound(true)
-            val success = ChatGPTInteractionHelper.setText(inputField, ChatGPTInteractionHelper.STARTUP_MESSAGE)
-            if (success) {
-                mainHandler.postDelayed({
-                    val updatedRoot = rootInActiveWindow ?: rootNode
-                    val currentInput = ChatGPTInteractionHelper.findInputField(updatedRoot)
-                    val sendButton = ChatGPTInteractionHelper.findSendButton(updatedRoot, currentInput)
-                    if (sendButton != null) {
-                        sendButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        AutomationManager.markStartupMessageSent()
-                        triggerVibration()
-                        Log.i(TAG, "BRIDGE START sent successfully to ChatGPT")
-                    }
-                }, 350)
-            }
+        if (isSendingMessage) return
+        val inputField = ChatGPTInteractionHelper.findInputField(rootNode) ?: return
+        AutomationManager.markChatGptInputFound(true)
+
+        isSendingMessage = true
+        val success = ChatGPTInteractionHelper.setText(inputField, ChatGPTInteractionHelper.STARTUP_MESSAGE)
+        if (success) {
+            mainHandler.postDelayed({
+                val updatedRoot = rootInActiveWindow ?: rootNode
+                val currentInput = ChatGPTInteractionHelper.findInputField(updatedRoot)
+                val candidate = ChatGPTInteractionHelper.findSendButtonCandidate(updatedRoot, currentInput)
+
+                if (candidate != null) {
+                    val clicked = ChatGPTInteractionHelper.executeSendAction(this, candidate)
+                    mainHandler.postDelayed({
+                        val verifyRoot = rootInActiveWindow ?: updatedRoot
+                        val verifyInput = ChatGPTInteractionHelper.findInputField(verifyRoot)
+                        val remainingText = verifyInput?.text?.toString()?.trim().orEmpty()
+                        if (remainingText.isBlank() || remainingText != ChatGPTInteractionHelper.STARTUP_MESSAGE) {
+                            AutomationManager.markStartupMessageSent()
+                            AutomationManager.markSendActionResult(true)
+                            triggerVibration()
+                            Log.i(TAG, "BRIDGE START verified sent successfully!")
+                        } else {
+                            AutomationManager.log("Send verified: Input not cleared yet. Halting retry to prevent typing loop.")
+                            AutomationManager.markStartupMessageSent()
+                        }
+                        isSendingMessage = false
+                    }, 400)
+                } else {
+                    AutomationManager.markSendButtonStatus(false, "Send button not found")
+                    AutomationManager.markSendActionResult(false)
+                    // Do NOT repeatedly type the same message if sending fails!
+                    AutomationManager.markStartupMessageSent()
+                    isSendingMessage = false
+                }
+            }, 350)
+        } else {
+            isSendingMessage = false
         }
     }
 
@@ -202,13 +239,11 @@ class BridgeAccessibilityService : AccessibilityService() {
 
         AutomationManager.markChatGptResponseDetected(true)
 
-        // Search text blocks for fenced or executable code
         for (text in textBlocks) {
             val extractedCode = CodeExtractor.extractExecutableCode(text)
             if (!extractedCode.isNullOrBlank()) {
                 val codeHash = CodeExtractor.computeHash(extractedCode)
 
-                // Avoid re-processing output as code
                 if (AutomationManager.isOutputHashKnown(codeHash)) {
                     continue
                 }
@@ -223,11 +258,9 @@ class BridgeAccessibilityService : AccessibilityService() {
     }
 
     private fun processExtractedCode(code: String, codeHash: String) {
-        // 1. Copy code to Android clipboard
         copyToClipboard(code, "AutoBridge Code")
         triggerVibration()
 
-        // 2. Save item to Room DB
         serviceScope.launch {
             val item = CapturedItem(
                 type = CapturedItem.TYPE_CHATGPT_CODE,
@@ -240,7 +273,6 @@ class BridgeAccessibilityService : AccessibilityService() {
             AutoBridgeApplication.instance.repository.insertItem(item)
         }
 
-        // 3. Send command to Termux Bridge (http://127.0.0.1:8765/run)
         isSendingBridgeCommand = true
         AutomationManager.markSendingToTermux(code, codeHash)
 
@@ -254,12 +286,10 @@ class BridgeAccessibilityService : AccessibilityService() {
                     val outputHash = CodeExtractor.computeHash(output)
                     AutomationManager.markOutputReceived(output, outputHash)
 
-                    // Copy Termux output to clipboard
                     copyToClipboard(output, "AutoBridge Termux Output")
                     AutomationManager.markOutputCopied(true)
                     triggerVibration()
 
-                    // Save output to Room DB
                     val outputItem = CapturedItem(
                         type = CapturedItem.TYPE_TERMUX_OUTPUT,
                         title = "Termux Output (${output.lines().size} lines)",
@@ -270,12 +300,10 @@ class BridgeAccessibilityService : AccessibilityService() {
                     )
                     AutoBridgeApplication.instance.repository.insertItem(outputItem)
 
-                    // Dispatch output back to ChatGPT
                     scheduleRelayToChatGpt(output)
                 }.onFailure { error ->
                     AutomationManager.log("Bridge /run error: ${error.message}")
                     AutomationManager.markBridgeConnected(false)
-                    // If bridge failed to connect, stay waiting or return to ready
                     AutomationManager.setState(AutomationState.WAITING_FOR_RESPONSE)
                 }
             } catch (e: Exception) {
@@ -291,6 +319,9 @@ class BridgeAccessibilityService : AccessibilityService() {
         scheduleRelayToChatGpt(textToSend)
     }
 
+    /**
+     * Handles forwarding output to ChatGPT with Background Mode separation
+     */
     private fun scheduleRelayToChatGpt(output: String) {
         val settings = AutoBridgeApplication.instance.repository.currentSettings()
         val formattedText = if (settings.promptTemplate.contains("{OUTPUT}")) {
@@ -302,43 +333,88 @@ class BridgeAccessibilityService : AccessibilityService() {
         pendingInputText = formattedText
         pendingInputAttempts = 0
 
-        // Bring ChatGPT to front if not already in foreground
-        if (_statusFlow.value.currentPackage != detectedChatGptPackage) {
-            bringChatGptToFront()
+        if (settings.backgroundMode) {
+            // Background Mode ON: Do NOT intentionally bring ChatGPT to foreground!
+            AutomationManager.log("BACKGROUND MODE: ON (ChatGPT foreground launch suppressed)")
+
+            val chatGptRoot = findChatGptRootNode()
+            if (chatGptRoot != null) {
+                attemptPasteAndSendToChatGpt(chatGptRoot)
+            } else {
+                AutomationManager.logBackgroundActionUnavailable(
+                    "ChatGPT window is not interactive in background. Android requires app window to be interactive to inspect nodes without foreground launch."
+                )
+            }
+        } else {
+            // Background Mode OFF: Normal visible mode — bring ChatGPT to front if needed
+            if (_statusFlow.value.currentPackage != detectedChatGptPackage) {
+                bringChatGptToFront()
+            }
         }
     }
 
     private fun attemptPasteAndSendToChatGpt(rootNode: AccessibilityNodeInfo) {
         val textToPaste = pendingInputText ?: return
-        pendingInputAttempts++
-
-        if (pendingInputAttempts > 25) {
-            Log.w(TAG, "Timeout attempting to paste into ChatGPT")
-            pendingInputText = null
-            return
-        }
+        if (isSendingMessage) return
 
         val inputField = ChatGPTInteractionHelper.findInputField(rootNode)
         if (inputField != null) {
             AutomationManager.markChatGptInputFound(true)
+            isSendingMessage = true
             val success = ChatGPTInteractionHelper.setText(inputField, textToPaste)
             if (success) {
                 mainHandler.postDelayed({
                     val updatedRoot = rootInActiveWindow ?: rootNode
                     val currentInput = ChatGPTInteractionHelper.findInputField(updatedRoot)
-                    val sendButton = ChatGPTInteractionHelper.findSendButton(updatedRoot, currentInput)
-                    if (sendButton != null) {
-                        sendButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        AutomationManager.markMessageSent(true)
-                        pendingInputText = null
-                        triggerVibration()
+                    val candidate = ChatGPTInteractionHelper.findSendButtonCandidate(updatedRoot, currentInput)
+
+                    if (candidate != null) {
+                        val clicked = ChatGPTInteractionHelper.executeSendAction(this, candidate)
+                        mainHandler.postDelayed({
+                            pendingInputText = null
+                            isSendingMessage = false
+                            AutomationManager.markMessageSent(clicked)
+                            triggerVibration()
+                        }, 400)
+                    } else {
+                        AutomationManager.markSendButtonStatus(false, "Send button not found")
+                        pendingInputText = null // Do not repeatedly type!
+                        isSendingMessage = false
+                        AutomationManager.markSendActionResult(false)
                     }
-                }, 400)
+                }, 350)
+            } else {
+                isSendingMessage = false
+                pendingInputText = null // Do not repeatedly type!
             }
         }
     }
 
+    fun findChatGptRootNode(): AccessibilityNodeInfo? {
+        val activeRoot = rootInActiveWindow
+        if (activeRoot != null && ChatGPTInteractionHelper.isChatGptPackage(activeRoot.packageName?.toString().orEmpty(), detectedChatGptPackage)) {
+            return activeRoot
+        }
+        try {
+            val allWindows = windows
+            if (allWindows != null) {
+                for (window in allWindows) {
+                    val root = window.root
+                    if (root != null && ChatGPTInteractionHelper.isChatGptPackage(root.packageName?.toString().orEmpty(), detectedChatGptPackage)) {
+                        return root
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
     fun bringChatGptToFront() {
+        val settings = AutoBridgeApplication.instance.repository.currentSettings()
+        if (settings.backgroundMode) {
+            // Suppressed in Background Mode
+            return
+        }
         try {
             val pm = packageManager
             val intent = pm.getLaunchIntentForPackage(detectedChatGptPackage)

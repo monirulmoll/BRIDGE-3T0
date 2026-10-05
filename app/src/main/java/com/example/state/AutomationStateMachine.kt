@@ -22,13 +22,19 @@ enum class AutomationState {
 
 data class DebugMetrics(
     val accessibilityEnabled: Boolean = false,
+    val backgroundMode: Boolean = false,
+    val controllerUrl: String = "http://127.0.0.1:8765",
+    val controllerConnected: Boolean = false,
+    val commandSent: Boolean = false,
+    val outputReceived: Boolean = false,
+    val sendButtonFound: Boolean = false,
+    val sendActionSuccess: Boolean = false,
+    val lastSendButtonDetails: String = "",
     val chatGptDetected: Boolean = false,
     val chatGptResponseDetected: Boolean = false,
     val codeBlockDetected: Boolean = false,
     val codeLength: Int = 0,
     val bridgeConnected: Boolean = false,
-    val commandSent: Boolean = false,
-    val outputReceived: Boolean = false,
     val outputCopied: Boolean = false,
     val chatGptInputFound: Boolean = false,
     val messageSent: Boolean = false,
@@ -68,6 +74,23 @@ object AutomationManager {
         )
     }
 
+    fun updateBackgroundMode(enabled: Boolean) {
+        _debugMetrics.value = _debugMetrics.value.copy(backgroundMode = enabled)
+        if (enabled) {
+            log("BACKGROUND MODE: ON")
+            log("CHATGPT FOREGROUND LAUNCH: DISABLED")
+            log("ACCESSIBILITY: ENABLED")
+            log("AUTOMATION: RUNNING")
+        } else {
+            log("BACKGROUND MODE: OFF")
+            log("CHATGPT FOREGROUND LAUNCH: ENABLED")
+        }
+    }
+
+    fun logBackgroundActionUnavailable(reason: String) {
+        log("BACKGROUND ACTION NOT AVAILABLE: $reason")
+    }
+
     fun setState(newState: AutomationState) {
         val oldState = _debugMetrics.value.currentState
         if (oldState != newState) {
@@ -80,6 +103,27 @@ object AutomationManager {
 
     fun markAccessibility(enabled: Boolean) {
         _debugMetrics.value = _debugMetrics.value.copy(accessibilityEnabled = enabled)
+    }
+
+    fun markControllerStatus(connected: Boolean) {
+        _debugMetrics.value = _debugMetrics.value.copy(
+            controllerConnected = connected,
+            bridgeConnected = connected
+        )
+    }
+
+    fun markSendButtonStatus(found: Boolean, details: String = "") {
+        _debugMetrics.value = _debugMetrics.value.copy(
+            sendButtonFound = found,
+            lastSendButtonDetails = details
+        )
+    }
+
+    fun markSendActionResult(success: Boolean) {
+        _debugMetrics.value = _debugMetrics.value.copy(
+            sendActionSuccess = success,
+            messageSent = success
+        )
     }
 
     fun markChatGptDetected(detected: Boolean) {
@@ -96,12 +140,10 @@ object AutomationManager {
     }
 
     fun markCodeDetected(code: String, codeHash: String): Boolean {
-        // Prevent re-processing an output as code or re-processing already executed command
         if (processedOutputHashes.contains(codeHash) || executedCommandHashes.contains(codeHash)) {
             return false
         }
 
-        // Only transition to CODE_DETECTED if waiting for response or idle/ready
         val state = _debugMetrics.value.currentState
         val canAcceptCode = state == AutomationState.WAITING_FOR_RESPONSE ||
                 state == AutomationState.WAITING_FOR_NEXT_RESPONSE ||
@@ -132,16 +174,15 @@ object AutomationManager {
             commandSent = true,
             lastCommandText = code
         )
-        log("Sending Command to Termux Bridge: ${code.take(40)}...")
+        log("Sending Command to Termux Bridge (http://127.0.0.1:8765/run): ${code.take(40)}...")
         setState(AutomationState.WAITING_FOR_OUTPUT)
     }
 
     fun markBridgeConnected(connected: Boolean) {
-        _debugMetrics.value = _debugMetrics.value.copy(bridgeConnected = connected)
+        markControllerStatus(connected)
     }
 
     fun markOutputReceived(output: String, outputHash: String) {
-        // Mark output hash so it is NEVER executed as a command
         processedOutputHashes.add(outputHash)
         if (processedOutputHashes.size > 200) {
             val first = processedOutputHashes.iterator().next()
@@ -169,7 +210,7 @@ object AutomationManager {
     }
 
     fun markMessageSent(sent: Boolean) {
-        _debugMetrics.value = _debugMetrics.value.copy(messageSent = sent)
+        markSendActionResult(sent)
         if (sent) {
             log("Message sent to ChatGPT successfully")
             setState(AutomationState.WAITING_FOR_NEXT_RESPONSE)
@@ -180,7 +221,8 @@ object AutomationManager {
         startupMessageAlreadySent = true
         _debugMetrics.value = _debugMetrics.value.copy(
             startupMessageSent = true,
-            messageSent = true
+            messageSent = true,
+            sendActionSuccess = true
         )
         log("Initial STARTUP MESSAGE ('BRIDGE START') sent successfully")
         setState(AutomationState.WAITING_FOR_RESPONSE)

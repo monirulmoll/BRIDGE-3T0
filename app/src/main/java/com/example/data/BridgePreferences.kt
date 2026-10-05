@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 data class BridgeSettings(
     val isBridgeEnabled: Boolean = true,
+    val backgroundMode: Boolean = false, // Background Mode: ON = Do not bring ChatGPT to foreground; OFF = Normal visible automation
     val autoCopyChatGptCode: Boolean = true,
     val strictCodeButtonOnly: Boolean = true, // Strictly only copy code attached to ChatGPT copy button/logo
     val autoSendTermuxToGpt: Boolean = true,
@@ -37,6 +38,7 @@ class BridgePreferences(context: Context) {
     private fun loadSettings(): BridgeSettings {
         return BridgeSettings(
             isBridgeEnabled = prefs.getBoolean("isBridgeEnabled", true),
+            backgroundMode = prefs.getBoolean("backgroundMode", false),
             autoCopyChatGptCode = prefs.getBoolean("autoCopyChatGptCode", true),
             strictCodeButtonOnly = prefs.getBoolean("strictCodeButtonOnly", true),
             autoSendTermuxToGpt = prefs.getBoolean("autoSendTermuxToGpt", true),
@@ -57,6 +59,7 @@ class BridgePreferences(context: Context) {
     fun updateSettings(newSettings: BridgeSettings) {
         prefs.edit()
             .putBoolean("isBridgeEnabled", newSettings.isBridgeEnabled)
+            .putBoolean("backgroundMode", newSettings.backgroundMode)
             .putBoolean("autoCopyChatGptCode", newSettings.autoCopyChatGptCode)
             .putBoolean("strictCodeButtonOnly", newSettings.strictCodeButtonOnly)
             .putBoolean("autoSendTermuxToGpt", newSettings.autoSendTermuxToGpt)

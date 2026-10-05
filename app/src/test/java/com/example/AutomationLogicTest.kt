@@ -83,4 +83,13 @@ class AutomationLogicTest {
         assertTrue(AutomationManager.startupMessageAlreadySent)
         assertEquals(AutomationState.WAITING_FOR_RESPONSE, AutomationManager.getCurrentState())
     }
+
+    @Test
+    fun `test background mode updates telemetry and suppresses foreground launch`() {
+        AutomationManager.updateBackgroundMode(true)
+        assertTrue(AutomationManager.debugMetrics.value.backgroundMode)
+
+        AutomationManager.updateBackgroundMode(false)
+        assertFalse(AutomationManager.debugMetrics.value.backgroundMode)
+    }
 }

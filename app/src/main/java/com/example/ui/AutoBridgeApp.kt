@@ -162,6 +162,8 @@ fun AutoBridgeApp(
                     totalCount = totalCount,
                     recentItems = capturedItems.take(5),
                     onStartAutomation = { viewModel.startBridgeAutomation(context) },
+                    onToggleBackgroundMode = { viewModel.toggleBackgroundMode(it) },
+                    onTestController = { viewModel.testControllerConnection(context) },
                     onEnableAccessibility = { viewModel.openAccessibilitySettings(context) },
                     onRequestBatteryExemption = { viewModel.requestIgnoreBatteryOptimizations(context) },
                     onLaunchGpt = { viewModel.launchApp(context, uiState.detectedGptPackage, "ChatGPT") },
@@ -205,6 +207,7 @@ fun AutoBridgeApp(
                     isBatteryIgnored = uiState.isBatteryOptimizationIgnored,
                     detectedGptPackage = uiState.detectedGptPackage,
                     onUpdateSettings = { viewModel.updateSettings(it) },
+                    onToggleBackgroundMode = { viewModel.toggleBackgroundMode(it) },
                     onToggleBackground = { viewModel.toggleBackgroundService(context, it) },
                     onToggleScreenOff = { viewModel.toggleScreenOffExecution(it) },
                     onToggleStrictCode = { viewModel.toggleStrictCodeButtonOnly(it) },
@@ -365,6 +368,8 @@ fun MonitorScreen(
     totalCount: Int,
     recentItems: List<CapturedItem>,
     onStartAutomation: () -> Unit,
+    onToggleBackgroundMode: (Boolean) -> Unit,
+    onTestController: () -> Unit,
     onEnableAccessibility: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
     onLaunchGpt: () -> Unit,
@@ -440,7 +445,125 @@ fun MonitorScreen(
             }
         }
 
-        // PRIMARY AUTOMATION TRIGGER BUTTON (Requirement 6: Startup & launch)
+        // BACKGROUND MODE TOGGLE CARD (User Request: "where is background mode button")
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (settings.backgroundMode) Slate850 else Slate900
+                ),
+                shape = RoundedCornerShape(14.dp),
+                border = CardDefaults.outlinedCardBorder().copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(
+                        if (settings.backgroundMode) CyberCyan else Slate800
+                    )
+                ),
+                modifier = Modifier.fillMaxWidth().testTag("home_background_mode_card")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Background Mode", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(if (settings.backgroundMode) CyberCyan.copy(alpha = 0.2f) else Slate800)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (settings.backgroundMode) "ON" else "OFF",
+                                    color = if (settings.backgroundMode) CyberCyan else Slate400,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (settings.backgroundMode)
+                                "ON: ChatGPT will NOT open! Automation runs automatically in the background."
+                            else
+                                "OFF: Normal visible automation (opens ChatGPT screen).",
+                            color = if (settings.backgroundMode) NeonEmerald else Slate400,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+                    Switch(
+                        checked = settings.backgroundMode,
+                        onCheckedChange = onToggleBackgroundMode,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = CyberCyan,
+                            uncheckedThumbColor = Slate400,
+                            uncheckedTrackColor = Slate800
+                        ),
+                        modifier = Modifier.testTag("home_background_mode_switch")
+                    )
+                }
+            }
+        }
+
+        // TERMUX CONTROLLER CONNECTION CARD (Requirement: Test Controller Button)
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                shape = RoundedCornerShape(14.dp),
+                border = CardDefaults.outlinedCardBorder().copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(
+                        if (debugMetrics.controllerConnected) NeonEmerald else AmberAlert
+                    )
+                ),
+                modifier = Modifier.fillMaxWidth().testTag("home_controller_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("TERMUX CONTROLLER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
+                            Text("http://127.0.0.1:8765/run", fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (debugMetrics.controllerConnected) NeonEmerald.copy(alpha = 0.15f) else AmberAlert.copy(alpha = 0.15f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (debugMetrics.controllerConnected) "CONTROLLER: CONNECTED" else "CONTROLLER: DISCONNECTED",
+                                color = if (debugMetrics.controllerConnected) NeonEmerald else AmberAlert,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Button(
+                        onClick = onTestController,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (debugMetrics.controllerConnected) Slate800 else AmberAlert,
+                            contentColor = if (debugMetrics.controllerConnected) CyberCyan else Color.Black
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("test_controller_button")
+                    ) {
+                        Text("Test Controller (echo BRIDGE_CONNECTION_OK)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        // PRIMARY AUTOMATION TRIGGER BUTTON
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Slate900),
@@ -454,10 +577,10 @@ fun MonitorScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("AUTOMATION CONTROLLER", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = CyberCyan, letterSpacing = 1.sp)
+                        Text("AUTOMATION PIPELINE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = CyberCyan, letterSpacing = 1.sp)
                         StatusBadge(
-                            text = if (debugMetrics.bridgeConnected) "Bridge: CONNECTED (Port 8765)" else "Bridge: STANDBY (127.0.0.1:8765)",
-                            color = if (debugMetrics.bridgeConnected) NeonEmerald else AmberAlert
+                            text = if (settings.backgroundMode) "Mode: BACKGROUND" else "Mode: NORMAL",
+                            color = if (settings.backgroundMode) CyberCyan else NeonEmerald
                         )
                     }
 
@@ -472,7 +595,10 @@ fun MonitorScreen(
 
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Launches ChatGPT, sends initial 'BRIDGE START' message, extracts code from responses, dispatches to http://127.0.0.1:8765/run, and relays outputs back.",
+                        text = if (settings.backgroundMode)
+                            "Background Mode ON: ChatGPT will NOT be opened. Listens to accessibility and sends commands to http://127.0.0.1:8765/run."
+                        else
+                            "Normal Mode: Opens ChatGPT, types 'BRIDGE START', detects code responses, and relays outputs via Termux bridge.",
                         fontSize = 12.sp,
                         color = Slate400,
                         lineHeight = 16.sp
@@ -482,7 +608,10 @@ fun MonitorScreen(
 
                     Button(
                         onClick = onStartAutomation,
-                        colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = Color.Black),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (settings.backgroundMode) TerminalGreen else CyberCyan,
+                            contentColor = Color.Black
+                        ),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -491,7 +620,11 @@ fun MonitorScreen(
                     ) {
                         Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("START AUTOMATION (BRIDGE START)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            text = if (settings.backgroundMode) "START AUTOMATION (BACKGROUND MODE)" else "START AUTOMATION (OPEN CHATGPT)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
                     }
                 }
             }
@@ -519,11 +652,15 @@ fun MonitorScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        StatusBadge(
+                            text = if (settings.backgroundMode) "Background Mode: ON" else "Background Mode: OFF",
+                            color = if (settings.backgroundMode) CyberCyan else Slate400
+                        )
                         if (settings.screenOffExecution) {
                             StatusBadge(text = "Screen-Off Awake: ON", color = NeonEmerald)
                         }
                         if (settings.strictCodeButtonOnly) {
-                            StatusBadge(text = "Code Block Filter: Active", color = CyberCyan)
+                            StatusBadge(text = "Code Filter: Active", color = CyberCyan)
                         }
                     }
 
@@ -649,7 +786,7 @@ fun DebugScreen(
             }
         }
 
-        // Live Diagnostic Metrics Table (Exact Format from Requirement 9)
+        // Live Diagnostic Metrics Table (Exact Format from Requirement)
         Card(
             colors = CardDefaults.cardColors(containerColor = Slate900),
             shape = RoundedCornerShape(14.dp),
@@ -657,19 +794,48 @@ fun DebugScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                DebugLine(label = "Accessibility", value = if (debugMetrics.accessibilityEnabled) "ENABLED" else "DISABLED", isPositive = debugMetrics.accessibilityEnabled)
+                DebugLine(label = "Controller URL", value = debugMetrics.controllerUrl, isPositive = true)
+                DebugLine(label = "Connection", value = if (debugMetrics.controllerConnected) "CONNECTED" else "DISCONNECTED", isPositive = debugMetrics.controllerConnected)
+                DebugLine(label = "Command sent", value = if (debugMetrics.commandSent) "YES" else "NO", isPositive = debugMetrics.commandSent)
+                DebugLine(label = "Output received", value = if (debugMetrics.outputReceived) "YES" else "NO", isPositive = debugMetrics.outputReceived)
+                DebugLine(label = "Send button", value = if (debugMetrics.sendButtonFound) "FOUND" else "NOT FOUND", isPositive = debugMetrics.sendButtonFound)
+                DebugLine(label = "Send action", value = if (debugMetrics.sendActionSuccess) "SUCCESS" else "FAILED", isPositive = debugMetrics.sendActionSuccess)
+                HorizontalDivider(color = Slate800, modifier = Modifier.padding(vertical = 6.dp))
+                DebugLine(label = "BACKGROUND MODE", value = if (debugMetrics.backgroundMode) "ON" else "OFF", isPositive = debugMetrics.backgroundMode)
+                DebugLine(label = "CHATGPT FOREGROUND LAUNCH", value = if (debugMetrics.backgroundMode) "DISABLED" else "ENABLED", isPositive = !debugMetrics.backgroundMode)
+                DebugLine(label = "ACCESSIBILITY", value = if (debugMetrics.accessibilityEnabled) "ENABLED" else "DISABLED", isPositive = debugMetrics.accessibilityEnabled)
+                DebugLine(label = "AUTOMATION", value = "RUNNING", isPositive = true)
+                HorizontalDivider(color = Slate800, modifier = Modifier.padding(vertical = 6.dp))
                 DebugLine(label = "ChatGPT detected", value = if (debugMetrics.chatGptDetected) "YES" else "NO", isPositive = debugMetrics.chatGptDetected)
                 DebugLine(label = "ChatGPT response detected", value = if (debugMetrics.chatGptResponseDetected) "YES" else "NO", isPositive = debugMetrics.chatGptResponseDetected)
                 DebugLine(label = "Code block detected", value = if (debugMetrics.codeBlockDetected) "YES" else "NO", isPositive = debugMetrics.codeBlockDetected)
                 DebugLine(label = "Code length", value = "${debugMetrics.codeLength} chars", isPositive = debugMetrics.codeLength > 0)
-                DebugLine(label = "Bridge (127.0.0.1:8765)", value = if (debugMetrics.bridgeConnected) "CONNECTED" else "WAITING", isPositive = debugMetrics.bridgeConnected)
-                DebugLine(label = "Command sent", value = if (debugMetrics.commandSent) "YES" else "NO", isPositive = debugMetrics.commandSent)
-                DebugLine(label = "Output received", value = if (debugMetrics.outputReceived) "YES" else "NO", isPositive = debugMetrics.outputReceived)
                 DebugLine(label = "Output copied", value = if (debugMetrics.outputCopied) "YES" else "NO", isPositive = debugMetrics.outputCopied)
                 DebugLine(label = "ChatGPT input found", value = if (debugMetrics.chatGptInputFound) "YES" else "NO", isPositive = debugMetrics.chatGptInputFound)
-                DebugLine(label = "Message sent", value = if (debugMetrics.messageSent) "YES" else "NO", isPositive = debugMetrics.messageSent)
                 DebugLine(label = "Startup 'BRIDGE START' sent", value = if (debugMetrics.startupMessageSent) "YES" else "NO", isPositive = debugMetrics.startupMessageSent)
                 DebugLine(label = "Current State", value = debugMetrics.currentState.name, isPositive = true)
+            }
+        }
+
+        // Send Button Node Details (If found)
+        if (debugMetrics.lastSendButtonDetails.isNotBlank()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CodeBlockBg),
+                shape = RoundedCornerShape(14.dp),
+                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("SEND BUTTON ACCESSIBILITY NODE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CyberCyan)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = debugMetrics.lastSendButtonDetails,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = Slate200,
+                        lineHeight = 16.sp
+                    )
+                }
             }
         }
 
@@ -1051,6 +1217,7 @@ fun SettingsScreen(
     isBatteryIgnored: Boolean,
     detectedGptPackage: String,
     onUpdateSettings: (BridgeSettings) -> Unit,
+    onToggleBackgroundMode: (Boolean) -> Unit,
     onToggleBackground: (Boolean) -> Unit,
     onToggleScreenOff: (Boolean) -> Unit,
     onToggleStrictCode: (Boolean) -> Unit,
@@ -1066,6 +1233,30 @@ fun SettingsScreen(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // AUTOMATION SECTION (Background Mode Toggle)
+        Text("AUTOMATION", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Slate900),
+            shape = RoundedCornerShape(14.dp),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                SettingSwitchRow(
+                    title = "Background Mode",
+                    subtitle = if (settings.backgroundMode) {
+                        "ON = ChatGPT ko foreground mein unnecessarily open nahi karega"
+                    } else {
+                        "OFF = Normal visible automation"
+                    },
+                    checked = settings.backgroundMode,
+                    onCheckedChange = onToggleBackgroundMode,
+                    testTag = "toggle_background_mode"
+                )
+            }
+        }
+
         Text("TERMUX LOCAL BRIDGE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
 
         Card(

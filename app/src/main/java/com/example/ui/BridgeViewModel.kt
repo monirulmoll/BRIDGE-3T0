@@ -123,13 +123,46 @@ class BridgeViewModel : ViewModel() {
     fun checkBridgeHealth() {
         viewModelScope.launch {
             val isConnected = bridgeClient.pingBridge()
-            AutomationManager.markBridgeConnected(isConnected)
+            AutomationManager.markControllerStatus(isConnected)
         }
     }
 
     /**
-     * Requirement 6: Startup behaviour:
-     * Check permissions, open ChatGPT, and initiate the BRIDGE START automated sequence
+     * Requirement: Test Controller Connection with command {"command": "echo BRIDGE_CONNECTION_OK"}
+     */
+    fun testControllerConnection(context: Context) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isTesting = true)
+            AutomationManager.log("Testing controller at http://127.0.0.1:8765/run with command 'echo BRIDGE_CONNECTION_OK'...")
+            val result = bridgeClient.testController()
+            result.onSuccess { output ->
+                _uiState.value = _uiState.value.copy(isTesting = false)
+                if (output.contains("BRIDGE_CONNECTION_OK")) {
+                    AutomationManager.markControllerStatus(true)
+                    AutomationManager.log("CONTROLLER: CONNECTED (Received: BRIDGE_CONNECTION_OK)")
+                    Toast.makeText(context, "CONTROLLER: CONNECTED", Toast.LENGTH_SHORT).show()
+                } else {
+                    AutomationManager.markControllerStatus(false)
+                    AutomationManager.log("CONTROLLER: DISCONNECTED (Output: $output)")
+                    Toast.makeText(context, "CONTROLLER: DISCONNECTED", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure { err ->
+                _uiState.value = _uiState.value.copy(isTesting = false)
+                AutomationManager.markControllerStatus(false)
+                AutomationManager.log("CONTROLLER: DISCONNECTED (Failed: ${err.message})")
+                Toast.makeText(context, "CONTROLLER: DISCONNECTED", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun toggleBackgroundMode(enabled: Boolean) {
+        val current = settings.value
+        repository.updateSettings(current.copy(backgroundMode = enabled))
+        AutomationManager.updateBackgroundMode(enabled)
+    }
+
+    /**
+     * Requirement: Background Mode vs Normal Mode startup behaviour
      */
     fun startBridgeAutomation(context: Context) {
         checkPermissions(context)
@@ -139,11 +172,27 @@ class BridgeViewModel : ViewModel() {
             return
         }
 
-        AutomationManager.log("Launching ChatGPT and initiating BRIDGE START automation...")
-        AutomationManager.setState(AutomationState.CHATGPT_READY)
+        val isBg = settings.value.backgroundMode
+        AutomationManager.updateBackgroundMode(isBg)
 
-        val gptPkg = _uiState.value.detectedGptPackage
-        launchApp(context, gptPkg, "ChatGPT")
+        if (isBg) {
+            // Background Mode ON: Suppress foreground launch
+            AutomationManager.setState(AutomationState.WAITING_FOR_RESPONSE)
+            val service = BridgeAccessibilityService.instance
+            val gptRoot = service?.findChatGptRootNode()
+            if (gptRoot == null) {
+                AutomationManager.logBackgroundActionUnavailable(
+                    "ChatGPT window is not interactive. Running in background mode without forcing ChatGPT foreground."
+                )
+            }
+            Toast.makeText(context, "Automation running in Background Mode", Toast.LENGTH_SHORT).show()
+        } else {
+            // Background Mode OFF: Normal visible mode
+            AutomationManager.log("Launching ChatGPT and initiating BRIDGE START automation...")
+            AutomationManager.setState(AutomationState.CHATGPT_READY)
+            val gptPkg = _uiState.value.detectedGptPackage
+            launchApp(context, gptPkg, "ChatGPT")
+        }
     }
 
     fun setFilter(filter: String) {
