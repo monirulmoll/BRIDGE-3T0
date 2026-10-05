@@ -162,6 +162,22 @@ class BridgeViewModel : ViewModel() {
     }
 
     /**
+     * Requirement: Test Copy button click via Method 1 (Accessibility) -> Method 2 (Template Matching)
+     */
+    fun testCopyButtonClick(context: Context) {
+        val service = BridgeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(context, "Accessibility Service is not active!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AutomationManager.log("Testing Copy button click (Method 1 -> Method 2)...")
+        service.triggerCopyButtonClick { success ->
+            val msg = if (success) "Copy button clicked successfully!" else "Copy button not found on screen"
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
      * Requirement: Background Mode vs Normal Mode startup behaviour
      */
     fun startBridgeAutomation(context: Context) {

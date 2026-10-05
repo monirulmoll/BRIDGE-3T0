@@ -186,6 +186,7 @@ fun AutoBridgeApp(
                     onTestBridgeCommand = { command ->
                         viewModel.runSimulatedBridgeCommand(context, command)
                     },
+                    onTestCopyButton = { viewModel.testCopyButtonClick(context) },
                     onCopyLog = { log ->
                         viewModel.copyToClipboard(context, log, "AutoBridge Sandbox Log")
                     }
@@ -902,6 +903,7 @@ fun SandboxScreen(
     onUpdateInput: (String) -> Unit,
     onTestChatGptCode: (String) -> Unit,
     onTestBridgeCommand: (String) -> Unit,
+    onTestCopyButton: () -> Unit,
     onCopyLog: (String) -> Unit
 ) {
     Column(
@@ -920,7 +922,7 @@ fun SandboxScreen(
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("Bridge & Parser Sandbox", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(modifier = Modifier.height(4.dp))
-                Text("Test local bridge (POST http://127.0.0.1:8765/run) and code block extraction directly.", fontSize = 12.sp, color = Slate400)
+                Text("Test local bridge (POST http://127.0.0.1:8765/run), code parser, and copy button locator.", fontSize = 12.sp, color = Slate400)
 
                 Spacer(modifier = Modifier.height(14.dp))
 
@@ -992,6 +994,17 @@ fun SandboxScreen(
                     ) {
                         Text("Run on Port 8765", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                     }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Button(
+                    onClick = onTestCopyButton,
+                    colors = ButtonDefaults.buttonColors(containerColor = Slate800, contentColor = CyberCyan),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("test_copy_button")
+                ) {
+                    Text("Test Copy Button Click (Method 1 & Method 2)", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                 }
             }
         }

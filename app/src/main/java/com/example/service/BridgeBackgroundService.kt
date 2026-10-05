@@ -67,17 +67,6 @@ class BridgeBackgroundService : Service() {
         }
         registerReceiver(screenReceiver, filter)
 
-        // Clipboard monitoring in background
-        clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipListener = ClipboardManager.OnPrimaryClipChangedListener {
-            val clip = clipboardManager?.primaryClip
-            if (clip != null && clip.itemCount > 0) {
-                val text = clip.getItemAt(0).text?.toString() ?: ""
-                Log.d(TAG, "Background clipboard detected update: ${text.take(30)}...")
-            }
-        }
-        clipListener?.let { clipboardManager?.addPrimaryClipChangedListener(it) }
-
         isRunning = true
         Log.i(TAG, "BridgeBackgroundService started successfully")
     }
@@ -144,7 +133,6 @@ class BridgeBackgroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        clipListener?.let { clipboardManager?.removePrimaryClipChangedListener(it) }
         screenReceiver?.let {
             try {
                 unregisterReceiver(it)

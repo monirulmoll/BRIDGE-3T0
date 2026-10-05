@@ -239,10 +239,11 @@ object AutomationManager {
         setState(AutomationState.WAITING_FOR_RESPONSE)
     }
 
+    fun isOutputHashKnown(hash: String): Boolean = processedOutputHashes.contains(hash)
+    fun isCommandExecuted(hash: String): Boolean = executedCommandHashes.contains(hash)
+
     fun resetStartupState() {
         startupMessageAlreadySent = false
         _debugMetrics.value = _debugMetrics.value.copy(startupMessageSent = false)
     }
-
-    fun isOutputHashKnown(hash: String): Boolean = processedOutputHashes.contains(hash)
 }

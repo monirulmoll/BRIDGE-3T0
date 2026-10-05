@@ -20,6 +20,7 @@ import com.example.bridge.TermuxBridgeClient
 import com.example.data.CapturedItem
 import com.example.state.AutomationManager
 import com.example.state.AutomationState
+import com.example.util.ChatGPTCopyButtonHelper
 import com.example.util.ChatGPTInteractionHelper
 import com.example.util.CodeExtractor
 import kotlinx.coroutines.CoroutineScope
@@ -180,6 +181,7 @@ class BridgeAccessibilityService : AccessibilityService() {
     }
 
     private var isSendingMessage: Boolean = false
+    private var isProcessingCode: Boolean = false
 
     /**
      * Requirement: Sends the exact startup message "BRIDGE START" on first app launch
@@ -187,11 +189,13 @@ class BridgeAccessibilityService : AccessibilityService() {
      * clicks the actionable node, verifies message sent, and prevents retyping.
      */
     private fun attemptSendStartupMessage(rootNode: AccessibilityNodeInfo) {
-        if (isSendingMessage) return
+        if (AutomationManager.startupMessageAlreadySent || isSendingMessage) return
         val inputField = ChatGPTInteractionHelper.findInputField(rootNode) ?: return
-        AutomationManager.markChatGptInputFound(true)
 
         isSendingMessage = true
+        AutomationManager.markStartupMessageSent() // Locked immediately to prevent duplicate sends!
+        AutomationManager.markChatGptInputFound(true)
+
         val success = ChatGPTInteractionHelper.setText(inputField, ChatGPTInteractionHelper.STARTUP_MESSAGE)
         if (success) {
             mainHandler.postDelayed({
@@ -203,18 +207,9 @@ class BridgeAccessibilityService : AccessibilityService() {
                 val clicked = ChatGPTInteractionHelper.executeSendAction(this, currentInput, candidate)
 
                 mainHandler.postDelayed({
-                    val verifyRoot = rootInActiveWindow ?: updatedRoot
-                    val verifyInput = ChatGPTInteractionHelper.findInputField(verifyRoot)
-                    val remainingText = verifyInput?.text?.toString()?.trim().orEmpty()
-                    if (remainingText.isBlank() || remainingText != ChatGPTInteractionHelper.STARTUP_MESSAGE) {
-                        AutomationManager.markStartupMessageSent()
-                        AutomationManager.markSendActionResult(true)
-                        triggerVibration()
-                        Log.i(TAG, "BRIDGE START verified sent successfully!")
-                    } else {
-                        AutomationManager.log("Send attempted at coordinates. Halting retry to prevent typing loop.")
-                        AutomationManager.markStartupMessageSent()
-                    }
+                    AutomationManager.markSendActionResult(clicked)
+                    triggerVibration()
+                    Log.i(TAG, "BRIDGE START sent successfully!")
                     isSendingMessage = false
                 }, 400)
             }, 350)
@@ -227,23 +222,33 @@ class BridgeAccessibilityService : AccessibilityService() {
      * Inspects ChatGPT response nodes, extracts pure code, and triggers Termux bridge
      */
     private fun inspectChatGPTForCode(rootNode: AccessibilityNodeInfo) {
+        if (isProcessingCode || isSendingBridgeCommand || isSendingMessage) return
+
         val textBlocks = mutableListOf<String>()
         ChatGPTInteractionHelper.collectTextNodes(rootNode, textBlocks)
         if (textBlocks.isEmpty()) return
 
         AutomationManager.markChatGptResponseDetected(true)
 
-        for (text in textBlocks) {
+        // Iterate in REVERSE (bottom-to-top) to pick ONLY the newest response, not old history!
+        for (text in textBlocks.reversed()) {
             val extractedCode = CodeExtractor.extractExecutableCode(text)
             if (!extractedCode.isNullOrBlank()) {
                 val codeHash = CodeExtractor.computeHash(extractedCode)
 
-                if (AutomationManager.isOutputHashKnown(codeHash)) {
+                if (AutomationManager.isOutputHashKnown(codeHash) || AutomationManager.isCommandExecuted(codeHash)) {
                     continue
                 }
 
                 val accepted = AutomationManager.markCodeDetected(extractedCode, codeHash)
                 if (accepted) {
+                    isProcessingCode = true
+                    // Next Copy Button Click: Try Method 1 (Accessibility scan) -> Method 2 (Template Matching)
+                    ChatGPTCopyButtonHelper.findAndClickCopyButton(this, rootNode) { copySuccess ->
+                        if (copySuccess) {
+                            Log.d(TAG, "ChatGPT Copy button triggered successfully")
+                        }
+                    }
                     processExtractedCode(extractedCode, codeHash)
                     return
                 }
@@ -274,6 +279,7 @@ class BridgeAccessibilityService : AccessibilityService() {
             try {
                 val result = bridgeClient.executeCommand(code)
                 isSendingBridgeCommand = false
+                isProcessingCode = false
 
                 result.onSuccess { output ->
                     AutomationManager.markBridgeConnected(true)
@@ -302,6 +308,7 @@ class BridgeAccessibilityService : AccessibilityService() {
                 }
             } catch (e: Exception) {
                 isSendingBridgeCommand = false
+                isProcessingCode = false
                 Log.e(TAG, "Exception during bridge execution: ${e.message}")
                 AutomationManager.log("Execution error: ${e.message}")
                 AutomationManager.setState(AutomationState.WAITING_FOR_RESPONSE)
@@ -351,10 +358,13 @@ class BridgeAccessibilityService : AccessibilityService() {
         val textToPaste = pendingInputText ?: return
         if (isSendingMessage) return
 
+        // Clear immediately so subsequent accessibility events cannot pick it up again!
+        pendingInputText = null
+        isSendingMessage = true
+
         val inputField = ChatGPTInteractionHelper.findInputField(rootNode)
         if (inputField != null) {
             AutomationManager.markChatGptInputFound(true)
-            isSendingMessage = true
             val success = ChatGPTInteractionHelper.setText(inputField, textToPaste)
             if (success) {
                 mainHandler.postDelayed({
@@ -365,7 +375,6 @@ class BridgeAccessibilityService : AccessibilityService() {
                     // Execute Send via Direct Coordinate Click (matching keyboard state) + Action
                     val clicked = ChatGPTInteractionHelper.executeSendAction(this, currentInput, candidate)
                     mainHandler.postDelayed({
-                        pendingInputText = null
                         isSendingMessage = false
                         AutomationManager.markMessageSent(clicked)
                         triggerVibration()
@@ -373,8 +382,9 @@ class BridgeAccessibilityService : AccessibilityService() {
                 }, 350)
             } else {
                 isSendingMessage = false
-                pendingInputText = null // Do not repeatedly type!
             }
+        } else {
+            isSendingMessage = false
         }
     }
 
@@ -421,6 +431,13 @@ class BridgeAccessibilityService : AccessibilityService() {
             clipboardManager?.setPrimaryClip(clip)
         } catch (e: Exception) {
             Log.e(TAG, "Clipboard copy failed: ${e.message}")
+        }
+    }
+
+    fun triggerCopyButtonClick(onResult: ((Boolean) -> Unit)? = null) {
+        val root = rootInActiveWindow ?: findChatGptRootNode()
+        ChatGPTCopyButtonHelper.findAndClickCopyButton(this, root) { success ->
+            onResult?.invoke(success)
         }
     }
 
