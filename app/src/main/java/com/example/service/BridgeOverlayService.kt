@@ -108,7 +108,7 @@ class BridgeOverlayService : Service() {
                         val service = BridgeAccessibilityService.instance
                         if (service != null) {
                             Toast.makeText(this, "Relaying to ChatGPT...", Toast.LENGTH_SHORT).show()
-                            service.triggerManualRelay("Termux output relayed via quick overlay", settings)
+                            service.triggerManualRelay("Termux output relayed via quick overlay")
                         } else {
                             Toast.makeText(this, "Please enable Accessibility Service in Settings", Toast.LENGTH_SHORT).show()
                         }

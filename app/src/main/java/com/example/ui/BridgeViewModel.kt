@@ -1,6 +1,5 @@
 package com.example.ui
 
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -9,17 +8,23 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.AutoBridgeApplication
+import com.example.bridge.TermuxBridgeClient
 import com.example.data.BridgeSettings
 import com.example.data.CapturedItem
 import com.example.service.BridgeAccessibilityService
 import com.example.service.BridgeBackgroundService
 import com.example.service.BridgeOverlayService
 import com.example.service.BridgeStatus
+import com.example.state.AutomationManager
+import com.example.state.AutomationState
+import com.example.state.DebugMetrics
+import com.example.util.AccessibilityPermissionHelper
+import com.example.util.ChatGPTInteractionHelper
+import com.example.util.CodeExtractor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,15 +42,18 @@ data class BridgeUiState(
     val selectedFilter: String = "ALL", // "ALL", "CHATGPT_CODE", "TERMUX_OUTPUT"
     val testInputText: String = "",
     val testOutputLog: String = "",
-    val isTesting: Boolean = false
+    val isTesting: Boolean = false,
+    val detectedGptPackage: String = "com.openai.chatgpt"
 )
 
 class BridgeViewModel : ViewModel() {
 
     private val repository = AutoBridgeApplication.instance.repository
+    private val bridgeClient = TermuxBridgeClient()
 
     val settings: StateFlow<BridgeSettings> = repository.settings
     val status: StateFlow<BridgeStatus> = BridgeAccessibilityService.statusFlow
+    val debugMetrics: StateFlow<DebugMetrics> = AutomationManager.debugMetrics
 
     val gptCodeCount: StateFlow<Int> = repository.gptCodeCount
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
@@ -77,11 +85,13 @@ class BridgeViewModel : ViewModel() {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    init {
+        checkBridgeHealth()
+    }
+
     fun checkPermissions(context: Context) {
-        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
-        val isServiceRunning = BridgeAccessibilityService.instance != null
-        val isServiceInEnabledList = am?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            ?.any { it.resolveInfo.serviceInfo.packageName == context.packageName } == true
+        val isGranted = AccessibilityPermissionHelper.isAccessibilityPermissionGranted(context)
+        AutomationManager.markAccessibility(isGranted)
 
         val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(context)
@@ -96,12 +106,44 @@ class BridgeViewModel : ViewModel() {
             true
         }
 
+        val gptPackage = ChatGPTInteractionHelper.detectChatGptPackage(context)
+
         _uiState.value = _uiState.value.copy(
-            isAccessibilityGranted = isServiceRunning || isServiceInEnabledList,
+            isAccessibilityGranted = isGranted,
             hasOverlayPermission = overlay,
             isBatteryOptimizationIgnored = isIgnoringBattery,
-            isBackgroundServiceRunning = BridgeBackgroundService.isRunning
+            isBackgroundServiceRunning = BridgeBackgroundService.isRunning,
+            detectedGptPackage = gptPackage
         )
+
+        // Ping local bridge in background
+        checkBridgeHealth()
+    }
+
+    fun checkBridgeHealth() {
+        viewModelScope.launch {
+            val isConnected = bridgeClient.pingBridge()
+            AutomationManager.markBridgeConnected(isConnected)
+        }
+    }
+
+    /**
+     * Requirement 6: Startup behaviour:
+     * Check permissions, open ChatGPT, and initiate the BRIDGE START automated sequence
+     */
+    fun startBridgeAutomation(context: Context) {
+        checkPermissions(context)
+        if (!_uiState.value.isAccessibilityGranted) {
+            Toast.makeText(context, "Please enable Accessibility Permission first!", Toast.LENGTH_LONG).show()
+            openAccessibilitySettings(context)
+            return
+        }
+
+        AutomationManager.log("Launching ChatGPT and initiating BRIDGE START automation...")
+        AutomationManager.setState(AutomationState.CHATGPT_READY)
+
+        val gptPkg = _uiState.value.detectedGptPackage
+        launchApp(context, gptPkg, "ChatGPT")
     }
 
     fun setFilter(filter: String) {
@@ -206,8 +248,9 @@ class BridgeViewModel : ViewModel() {
 
     fun openAccessibilitySettings(context: Context) {
         try {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
             context.startActivity(intent)
         } catch (_: Exception) {
             Toast.makeText(context, "Unable to open Accessibility Settings", Toast.LENGTH_SHORT).show()
@@ -220,8 +263,9 @@ class BridgeViewModel : ViewModel() {
                 val intent = Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:${context.packageName}")
-                )
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
                 context.startActivity(intent)
             } catch (_: Exception) {
                 Toast.makeText(context, "Unable to open Overlay Permission settings", Toast.LENGTH_SHORT).show()
@@ -234,7 +278,7 @@ class BridgeViewModel : ViewModel() {
             val pm = context.packageManager
             val intent = pm.getLaunchIntentForPackage(packageName)
             if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
                 context.startActivity(intent)
             } else {
                 Toast.makeText(context, "$appName is not installed on this device", Toast.LENGTH_LONG).show()
@@ -244,66 +288,49 @@ class BridgeViewModel : ViewModel() {
         }
     }
 
-    // --- Interactive Sandbox Simulation ---
+    // --- Sandbox Simulation & Direct Bridge Test ---
     fun updateTestInput(input: String) {
         _uiState.value = _uiState.value.copy(testInputText = input)
     }
 
-    fun runSimulatedChatGptCodeDetection(context: Context, codeSample: String) {
+    fun runSimulatedBridgeCommand(context: Context, command: String) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isTesting = true)
-            val extracted = if (codeSample.contains("```")) {
-                val regex = Regex("```(?:[a-zA-Z0-9_-]+)?\\s*([\\s\\S]*?)```")
-                regex.find(codeSample)?.groupValues?.get(1)?.trim() ?: codeSample.trim()
-            } else {
-                codeSample.trim()
+            AutomationManager.log("Testing Bridge POST http://127.0.0.1:8765/run with: $command")
+            val cleanCmd = CodeExtractor.cleanCodeSnippet(command)
+
+            val result = bridgeClient.executeCommand(cleanCmd)
+            result.onSuccess { output ->
+                copyToClipboard(context, output, "AutoBridge Output")
+                val outputHash = CodeExtractor.computeHash(output)
+                AutomationManager.markOutputReceived(output, outputHash)
+                AutomationManager.markOutputCopied(true)
+
+                _uiState.value = _uiState.value.copy(
+                    isTesting = false,
+                    testOutputLog = "✅ Bridge Connected & Executed!\n\nOUTPUT:\n$output\n\n(Output copied to clipboard & tracked to prevent feedback loop)"
+                )
+            }.onFailure { err ->
+                _uiState.value = _uiState.value.copy(
+                    isTesting = false,
+                    testOutputLog = "❌ Bridge Error (http://127.0.0.1:8765/run):\n${err.message}\n\nPlease ensure Termux local bridge server is running on port 8765."
+                )
             }
-
-            copyToClipboard(context, extracted, "AutoBridge Test Code")
-
-            val item = CapturedItem(
-                type = CapturedItem.TYPE_CHATGPT_CODE,
-                title = "ChatGPT Code (Simulated Test)",
-                content = extracted,
-                languageOrTag = if (extracted.contains("def ")) "python" else "bash",
-                sourcePackage = "com.openai.chatgpt (Test)",
-                isAutoRelayed = false
-            )
-            repository.insertItem(item)
-
-            _uiState.value = _uiState.value.copy(
-                isTesting = false,
-                testOutputLog = "✅ Successfully parsed & auto-copied code snippet to Clipboard!\nStrict Copy Logo Match: Active\nSnippet length: ${extracted.length} chars.\nBridge is ready to auto-paste into Termux."
-            )
         }
     }
 
-    fun runSimulatedTermuxOutputRelay(context: Context, terminalOutputSample: String) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isTesting = true)
-            val trimmed = terminalOutputSample.trim()
-            copyToClipboard(context, trimmed, "AutoBridge Test Termux")
-
-            val currentSettings = settings.value
-            val item = CapturedItem(
-                type = CapturedItem.TYPE_TERMUX_OUTPUT,
-                title = "Termux Output (Simulated Test)",
-                content = trimmed,
-                languageOrTag = "terminal",
-                sourcePackage = "com.termux (Test)",
-                isAutoRelayed = currentSettings.autoSendTermuxToGpt
-            )
-            repository.insertItem(item)
-
-            val formattedRelay = currentSettings.promptTemplate.replace("{OUTPUT}", trimmed)
-            val service = BridgeAccessibilityService.instance
-            if (service != null && currentSettings.autoSendTermuxToGpt) {
-                service.triggerManualRelay(trimmed, currentSettings)
-            }
-
+    fun runSimulatedChatGptCodeDetection(context: Context, sampleText: String) {
+        val extracted = CodeExtractor.extractExecutableCode(sampleText)
+        if (extracted != null) {
+            copyToClipboard(context, extracted, "AutoBridge Code")
+            val hash = CodeExtractor.computeHash(extracted)
+            AutomationManager.markCodeDetected(extracted, hash)
             _uiState.value = _uiState.value.copy(
-                isTesting = false,
-                testOutputLog = "✅ Termux terminal output captured & copied to Clipboard!\nFormatted Relay Message Prepared:\n\n$formattedRelay\n\n(Auto-Send dispatch executed)"
+                testOutputLog = "✅ Code Extracted Successfully!\n\nCODE:\n$extracted\n\nLength: ${extracted.length} chars (Markdown fences & explanations excluded)"
+            )
+        } else {
+            _uiState.value = _uiState.value.copy(
+                testOutputLog = "⚠️ No valid code block detected in sample text."
             )
         }
     }

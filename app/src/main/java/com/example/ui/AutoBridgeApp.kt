@@ -2,7 +2,6 @@ package com.example.ui
 
 import android.os.Build
 import android.text.format.DateUtils
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -33,12 +32,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Launch
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Security
@@ -89,6 +89,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.BridgeSettings
 import com.example.data.CapturedItem
+import com.example.state.AutomationState
+import com.example.state.DebugMetrics
 import com.example.ui.theme.AmberAlert
 import com.example.ui.theme.CodeBlockBg
 import com.example.ui.theme.CyberCyan
@@ -99,6 +101,7 @@ import com.example.ui.theme.Slate700
 import com.example.ui.theme.Slate800
 import com.example.ui.theme.Slate850
 import com.example.ui.theme.Slate900
+import com.example.ui.theme.Slate950
 import com.example.ui.theme.TerminalGreen
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -112,12 +115,12 @@ fun AutoBridgeApp(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val status by viewModel.status.collectAsStateWithLifecycle()
+    val debugMetrics by viewModel.debugMetrics.collectAsStateWithLifecycle()
     val capturedItems by viewModel.capturedItems.collectAsStateWithLifecycle()
     val gptCount by viewModel.gptCodeCount.collectAsStateWithLifecycle()
     val termuxCount by viewModel.termuxOutputCount.collectAsStateWithLifecycle()
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
 
-    // Periodically re-check permissions and background state
     LaunchedEffect(Unit) {
         viewModel.checkPermissions(context)
         if (settings.isBridgeEnabled && settings.workInBackground) {
@@ -130,6 +133,7 @@ fun AutoBridgeApp(
             AutoBridgeTopBar(
                 isBridgeEnabled = settings.isBridgeEnabled,
                 isAccessibilityGranted = uiState.isAccessibilityGranted,
+                currentState = debugMetrics.currentState,
                 onToggleBridge = { viewModel.toggleBridge(it, context) },
                 onRefresh = { viewModel.checkPermissions(context) }
             )
@@ -152,32 +156,39 @@ fun AutoBridgeApp(
                     uiState = uiState,
                     settings = settings,
                     status = status,
+                    debugMetrics = debugMetrics,
                     gptCount = gptCount,
                     termuxCount = termuxCount,
                     totalCount = totalCount,
                     recentItems = capturedItems.take(5),
+                    onStartAutomation = { viewModel.startBridgeAutomation(context) },
                     onEnableAccessibility = { viewModel.openAccessibilitySettings(context) },
                     onRequestBatteryExemption = { viewModel.requestIgnoreBatteryOptimizations(context) },
-                    onLaunchGpt = { viewModel.launchApp(context, settings.chatGptPackage, "ChatGPT") },
+                    onLaunchGpt = { viewModel.launchApp(context, uiState.detectedGptPackage, "ChatGPT") },
                     onLaunchTermux = { viewModel.launchApp(context, settings.termuxPackage, "Termux") },
                     onCopyItem = { item -> viewModel.copyToClipboard(context, item.content, item.title) },
                     onNavigateToTab = { selectedTab = it }
                 )
-                1 -> SandboxScreen(
+                1 -> DebugScreen(
+                    debugMetrics = debugMetrics,
+                    onRefresh = { viewModel.checkPermissions(context) },
+                    onOpenAccessibility = { viewModel.openAccessibilitySettings(context) }
+                )
+                2 -> SandboxScreen(
                     uiState = uiState,
                     settings = settings,
                     onUpdateInput = { viewModel.updateTestInput(it) },
                     onTestChatGptCode = { sample ->
                         viewModel.runSimulatedChatGptCodeDetection(context, sample)
                     },
-                    onTestTermuxOutput = { output ->
-                        viewModel.runSimulatedTermuxOutputRelay(context, output)
+                    onTestBridgeCommand = { command ->
+                        viewModel.runSimulatedBridgeCommand(context, command)
                     },
                     onCopyLog = { log ->
                         viewModel.copyToClipboard(context, log, "AutoBridge Sandbox Log")
                     }
                 )
-                2 -> HistoryScreen(
+                3 -> HistoryScreen(
                     capturedItems = capturedItems,
                     searchQuery = uiState.searchQuery,
                     selectedFilter = uiState.selectedFilter,
@@ -187,11 +198,12 @@ fun AutoBridgeApp(
                     onDeleteItem = { id -> viewModel.deleteItem(id) },
                     onClearHistory = { viewModel.clearHistory() }
                 )
-                3 -> SettingsScreen(
+                4 -> SettingsScreen(
                     settings = settings,
                     hasOverlayPermission = uiState.hasOverlayPermission,
                     isAccessibilityGranted = uiState.isAccessibilityGranted,
                     isBatteryIgnored = uiState.isBatteryOptimizationIgnored,
+                    detectedGptPackage = uiState.detectedGptPackage,
                     onUpdateSettings = { viewModel.updateSettings(it) },
                     onToggleBackground = { viewModel.toggleBackgroundService(context, it) },
                     onToggleScreenOff = { viewModel.toggleScreenOffExecution(it) },
@@ -211,6 +223,7 @@ fun AutoBridgeApp(
 fun AutoBridgeTopBar(
     isBridgeEnabled: Boolean,
     isAccessibilityGranted: Boolean,
+    currentState: AutomationState,
     onToggleBridge: (Boolean) -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -250,7 +263,7 @@ fun AutoBridgeTopBar(
                 Text(
                     text = "AutoBridge",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 19.sp,
+                    fontSize = 18.sp,
                     color = Color.White
                 )
 
@@ -261,9 +274,9 @@ fun AutoBridgeTopBar(
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = "GPT ↔ Termux",
+                        text = currentState.name,
                         color = CyberCyan,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -313,6 +326,7 @@ fun AutoBridgeBottomNav(
     ) {
         val items = listOf(
             Triple("Monitor", Icons.Default.PlayArrow, "monitor_tab"),
+            Triple("Debug", Icons.Default.BugReport, "debug_tab"),
             Triple("Sandbox", Icons.Default.Science, "sandbox_tab"),
             Triple("History", Icons.Default.History, "history_tab"),
             Triple("Settings", Icons.Default.Settings, "settings_tab")
@@ -321,7 +335,7 @@ fun AutoBridgeBottomNav(
         items.forEachIndexed { index, item ->
             NavigationBarItem(
                 icon = { Icon(item.second, contentDescription = item.first) },
-                label = { Text(item.first, fontSize = 11.sp) },
+                label = { Text(item.first, fontSize = 10.sp) },
                 selected = selectedTab == index,
                 onClick = { onSelectTab(index) },
                 colors = NavigationBarItemDefaults.colors(
@@ -345,10 +359,12 @@ fun MonitorScreen(
     uiState: BridgeUiState,
     settings: BridgeSettings,
     status: com.example.service.BridgeStatus,
+    debugMetrics: DebugMetrics,
     gptCount: Int,
     termuxCount: Int,
     totalCount: Int,
     recentItems: List<CapturedItem>,
+    onStartAutomation: () -> Unit,
     onEnableAccessibility: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
     onLaunchGpt: () -> Unit,
@@ -363,13 +379,32 @@ fun MonitorScreen(
         contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Accessibility Permission Notice Banner
-        if (!uiState.isAccessibilityGranted) {
-            item {
+        // ACCESSIBILITY PERMISSION STATUS CARD
+        item {
+            if (uiState.isAccessibilityGranted) {
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = AmberAlert.copy(alpha = 0.12f)
-                    ),
+                    colors = CardDefaults.cardColors(containerColor = Slate900),
+                    shape = RoundedCornerShape(14.dp),
+                    border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(NeonEmerald)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = NeonEmerald, modifier = Modifier.size(24.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Accessibility: ENABLED", fontWeight = FontWeight.Bold, color = NeonEmerald, fontSize = 14.sp)
+                            Text("Service is active and monitoring ChatGPT & Termux.", color = Slate400, fontSize = 12.sp)
+                        }
+                    }
+                }
+            } else {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = AmberAlert.copy(alpha = 0.12f)),
                     shape = RoundedCornerShape(14.dp),
                     border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AmberAlert)),
                     modifier = Modifier.fillMaxWidth()
@@ -379,29 +414,17 @@ fun MonitorScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Security,
-                                contentDescription = "Accessibility permission needed",
-                                tint = AmberAlert,
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Text(
-                                text = "Accessibility Service Not Active",
-                                fontWeight = FontWeight.Bold,
-                                color = AmberAlert,
-                                fontSize = 15.sp
-                            )
+                            Icon(imageVector = Icons.Default.Security, contentDescription = null, tint = AmberAlert, modifier = Modifier.size(24.dp))
+                            Text("Accessibility: DISABLED (Action Required)", fontWeight = FontWeight.Bold, color = AmberAlert, fontSize = 14.sp)
                         }
-
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "To automatically copy ChatGPT code blocks and capture Termux outputs, please enable the AutoBridge service in Android Settings.",
-                            fontSize = 13.sp,
+                            text = "Please turn ON 'AutoBridge Code Relay' in Android Settings. As soon as you enable it, the app will instantly reflect 'ENABLED'.",
+                            fontSize = 12.sp,
                             color = Slate200,
-                            lineHeight = 18.sp
+                            lineHeight = 17.sp
                         )
-
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Button(
                             onClick = onEnableAccessibility,
                             colors = ButtonDefaults.buttonColors(containerColor = AmberAlert, contentColor = Color.Black),
@@ -410,56 +433,19 @@ fun MonitorScreen(
                                 .fillMaxWidth()
                                 .testTag("enable_accessibility_button")
                         ) {
-                            Text("Open Accessibility Settings", fontWeight = FontWeight.SemiBold)
+                            Text("Open Accessibility Settings", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
         }
 
-        // Screen Off & Battery Optimization Reminder Banner
-        if (!uiState.isBatteryOptimizationIgnored && settings.screenOffExecution) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Slate900),
-                    shape = RoundedCornerShape(14.dp),
-                    border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCyan.copy(alpha = 0.4f))),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Icon(imageVector = Icons.Default.BatteryAlert, contentDescription = null, tint = CyberCyan, modifier = Modifier.size(18.dp))
-                                Text("Screen-Off Execution Mode", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
-                            }
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text("Allow app to run unrestricted so it keeps working when screen turns off.", color = Slate400, fontSize = 11.sp)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = onRequestBatteryExemption,
-                            colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = Color.Black),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Allow", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Live Service Status Card
+        // PRIMARY AUTOMATION TRIGGER BUTTON (Requirement 6: Startup & launch)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Slate900),
                 shape = RoundedCornerShape(16.dp),
-                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCyan)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -468,59 +454,80 @@ fun MonitorScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "BRIDGE STATUS",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Slate400,
-                            letterSpacing = 1.sp
+                        Text("AUTOMATION CONTROLLER", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = CyberCyan, letterSpacing = 1.sp)
+                        StatusBadge(
+                            text = if (debugMetrics.bridgeConnected) "Bridge: CONNECTED (Port 8765)" else "Bridge: STANDBY (127.0.0.1:8765)",
+                            color = if (debugMetrics.bridgeConnected) NeonEmerald else AmberAlert
                         )
-
-                        val statusColor = if (status.isConnected && settings.isBridgeEnabled) NeonEmerald else Slate400
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(statusColor)
-                            )
-                            Text(
-                                text = if (status.isConnected && settings.isBridgeEnabled) "LISTENING" else "STANDBY",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = statusColor
-                            )
-                        }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
+                        text = "Current State: ${debugMetrics.currentState.name}",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Launches ChatGPT, sends initial 'BRIDGE START' message, extracts code from responses, dispatches to http://127.0.0.1:8765/run, and relays outputs back.",
+                        fontSize = 12.sp,
+                        color = Slate400,
+                        lineHeight = 16.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Button(
+                        onClick = onStartAutomation,
+                        colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = Color.Black),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .testTag("start_bridge_automation_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("START AUTOMATION (BRIDGE START)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+
+        // Live Service Metrics Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                shape = RoundedCornerShape(16.dp),
+                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
                         text = status.lastAction,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = Color.White
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Badges for Active Modes
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         if (settings.screenOffExecution) {
-                            StatusBadge(text = "Screen-Off CPU Awake: ON", color = NeonEmerald)
+                            StatusBadge(text = "Screen-Off Awake: ON", color = NeonEmerald)
                         }
                         if (settings.strictCodeButtonOnly) {
-                            StatusBadge(text = "Copy Logo Only: Active", color = CyberCyan)
+                            StatusBadge(text = "Code Block Filter: Active", color = CyberCyan)
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     HorizontalDivider(color = Slate800)
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -531,21 +538,15 @@ fun MonitorScreen(
                     ) {
                         StatItem(label = "GPT Code Copied", value = gptCount.toString(), color = CyberCyan)
                         StatItem(label = "Termux Relayed", value = termuxCount.toString(), color = TerminalGreen)
-                        StatItem(label = "Total Operations", value = totalCount.toString(), color = Slate200)
+                        StatItem(label = "Total Ops", value = totalCount.toString(), color = Slate200)
                     }
                 }
             }
         }
 
-        // Quick Launch App Shortcuts
+        // Quick Launch Shortcuts
         item {
-            Text(
-                text = "QUICK LAUNCH & TARGETS",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = Slate400,
-                letterSpacing = 1.sp
-            )
+            Text("QUICK LAUNCH APPS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
             Spacer(modifier = Modifier.height(8.dp))
 
             Row(
@@ -557,13 +558,11 @@ fun MonitorScreen(
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = CyberCyan),
                     border = ButtonDefaults.outlinedButtonBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCyan.copy(alpha = 0.5f))),
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("launch_chatgpt_button")
+                    modifier = Modifier.weight(1f).testTag("launch_chatgpt_button")
                 ) {
-                    Icon(imageVector = Icons.Default.Launch, contentDescription = "Launch ChatGPT", modifier = Modifier.size(16.dp))
+                    Icon(imageVector = Icons.Default.Launch, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Launch ChatGPT")
+                    Text("Open ChatGPT", fontSize = 12.sp)
                 }
 
                 OutlinedButton(
@@ -571,37 +570,11 @@ fun MonitorScreen(
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TerminalGreen),
                     border = ButtonDefaults.outlinedButtonBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(TerminalGreen.copy(alpha = 0.5f))),
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("launch_termux_button")
+                    modifier = Modifier.weight(1f).testTag("launch_termux_button")
                 ) {
-                    Icon(imageVector = Icons.Default.Terminal, contentDescription = "Launch Termux", modifier = Modifier.size(16.dp))
+                    Icon(imageVector = Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Launch Termux")
-                }
-            }
-        }
-
-        // Bridge Workflow Explanation Card
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Slate900),
-                shape = RoundedCornerShape(14.dp),
-                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Automated Loop Workflow",
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    WorkflowStep(number = "1", title = "Strict ChatGPT Code Copy", desc = "Accessibility scans ChatGPT response, targeting only generated code blocks that have the Copy code button/logo, and puts code in clipboard.")
-                    WorkflowStep(number = "2", title = "Termux Auto-Paste (Your Bridge)", desc = "Your existing bridge controller automatically pastes the clipboard code into Termux.")
-                    WorkflowStep(number = "3", title = "Termux Output Auto-Capture", desc = "AutoBridge grabs terminal stdout/stderr, formats prompt template, and sends back to ChatGPT even in background/screen-off.")
+                    Text("Open Termux", fontSize = 12.sp)
                 }
             }
         }
@@ -613,22 +586,13 @@ fun MonitorScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "RECENT CAPTURES",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Slate400,
-                    letterSpacing = 1.sp
-                )
-
+                Text("RECENT CAPTURES", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
                 Text(
                     text = "View all",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = CyberCyan,
-                    modifier = Modifier
-                        .clickable { onNavigateToTab(2) }
-                        .padding(4.dp)
+                    modifier = Modifier.clickable { onNavigateToTab(3) }.padding(4.dp)
                 )
             }
         }
@@ -636,78 +600,130 @@ fun MonitorScreen(
         if (recentItems.isEmpty()) {
             item {
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(imageVector = Icons.Default.Science, contentDescription = null, tint = Slate700, modifier = Modifier.size(36.dp))
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("No items captured yet", color = Slate400, fontSize = 13.sp)
-                        Text("Switch to ChatGPT or test in the Sandbox tab", color = Slate700, fontSize = 12.sp)
+                        Text("Tap 'START AUTOMATION' or test in the Sandbox tab", color = Slate700, fontSize = 12.sp)
                     }
                 }
             }
         } else {
             items(recentItems, key = { it.id }) { item ->
-                CapturedItemCard(
-                    item = item,
-                    onCopy = { onCopyItem(item) },
-                    onDelete = null
-                )
+                CapturedItemCard(item = item, onCopy = { onCopyItem(item) }, onDelete = null)
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------
+// 2. DEBUG MODE SCREEN (Requirement 9)
+// -------------------------------------------------------------
+@Composable
+fun DebugScreen(
+    debugMetrics: DebugMetrics,
+    onRefresh: () -> Unit,
+    onOpenAccessibility: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("AUTOMATION DEBUG MODE", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+                Text("Real-time pipeline diagnostics & telemetry", fontSize = 12.sp, color = Slate400)
+            }
+            IconButton(onClick = onRefresh) {
+                Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh", tint = CyberCyan)
+            }
+        }
+
+        // Live Diagnostic Metrics Table (Exact Format from Requirement 9)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Slate900),
+            shape = RoundedCornerShape(14.dp),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                DebugLine(label = "Accessibility", value = if (debugMetrics.accessibilityEnabled) "ENABLED" else "DISABLED", isPositive = debugMetrics.accessibilityEnabled)
+                DebugLine(label = "ChatGPT detected", value = if (debugMetrics.chatGptDetected) "YES" else "NO", isPositive = debugMetrics.chatGptDetected)
+                DebugLine(label = "ChatGPT response detected", value = if (debugMetrics.chatGptResponseDetected) "YES" else "NO", isPositive = debugMetrics.chatGptResponseDetected)
+                DebugLine(label = "Code block detected", value = if (debugMetrics.codeBlockDetected) "YES" else "NO", isPositive = debugMetrics.codeBlockDetected)
+                DebugLine(label = "Code length", value = "${debugMetrics.codeLength} chars", isPositive = debugMetrics.codeLength > 0)
+                DebugLine(label = "Bridge (127.0.0.1:8765)", value = if (debugMetrics.bridgeConnected) "CONNECTED" else "WAITING", isPositive = debugMetrics.bridgeConnected)
+                DebugLine(label = "Command sent", value = if (debugMetrics.commandSent) "YES" else "NO", isPositive = debugMetrics.commandSent)
+                DebugLine(label = "Output received", value = if (debugMetrics.outputReceived) "YES" else "NO", isPositive = debugMetrics.outputReceived)
+                DebugLine(label = "Output copied", value = if (debugMetrics.outputCopied) "YES" else "NO", isPositive = debugMetrics.outputCopied)
+                DebugLine(label = "ChatGPT input found", value = if (debugMetrics.chatGptInputFound) "YES" else "NO", isPositive = debugMetrics.chatGptInputFound)
+                DebugLine(label = "Message sent", value = if (debugMetrics.messageSent) "YES" else "NO", isPositive = debugMetrics.messageSent)
+                DebugLine(label = "Startup 'BRIDGE START' sent", value = if (debugMetrics.startupMessageSent) "YES" else "NO", isPositive = debugMetrics.startupMessageSent)
+                DebugLine(label = "Current State", value = debugMetrics.currentState.name, isPositive = true)
+            }
+        }
+
+        // Live Event Logs
+        Card(
+            colors = CardDefaults.cardColors(containerColor = CodeBlockBg),
+            shape = RoundedCornerShape(14.dp),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text("EVENT LOG STREAM", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TerminalGreen)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (debugMetrics.logs.isEmpty()) {
+                    Text("No events recorded yet. Automation is listening.", color = Slate700, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                } else {
+                    debugMetrics.logs.takeLast(15).forEach { logLine ->
+                        Text(
+                            text = logLine,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = Slate200,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun StatusBadge(text: String, color: Color) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(color.copy(alpha = 0.15f))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-    ) {
-        Text(text = text, color = color, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-fun StatItem(label: String, value: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = value, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = color)
-        Text(text = label, fontSize = 11.sp, color = Slate400)
-    }
-}
-
-@Composable
-fun WorkflowStep(number: String, title: String, desc: String) {
+fun DebugLine(label: String, value: String, isPositive: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.Top
+            .padding(vertical = 5.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(20.dp)
-                .clip(CircleShape)
-                .background(CyberCyan.copy(alpha = 0.2f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(text = number, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CyberCyan)
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Column {
-            Text(text = title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-            Text(text = desc, fontSize = 12.sp, color = Slate400, lineHeight = 16.sp)
-        }
+        Text(text = "$label:", fontSize = 13.sp, color = Slate400)
+        Text(
+            text = value,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (isPositive) NeonEmerald else AmberAlert,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }
 
 // -------------------------------------------------------------
-// 2. SANDBOX TESTING SCREEN
+// 3. SANDBOX TESTING SCREEN
 // -------------------------------------------------------------
 @Composable
 fun SandboxScreen(
@@ -715,7 +731,7 @@ fun SandboxScreen(
     settings: BridgeSettings,
     onUpdateInput: (String) -> Unit,
     onTestChatGptCode: (String) -> Unit,
-    onTestTermuxOutput: (String) -> Unit,
+    onTestBridgeCommand: (String) -> Unit,
     onCopyLog: (String) -> Unit
 ) {
     Column(
@@ -732,18 +748,9 @@ fun SandboxScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Bridge Test Sandbox",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
+                Text("Bridge & Parser Sandbox", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Test the exact parsing, code detection, and relay logic without needing to switch apps right now.",
-                    fontSize = 12.sp,
-                    color = Slate400
-                )
+                Text("Test local bridge (POST http://127.0.0.1:8765/run) and code block extraction directly.", fontSize = 12.sp, color = Slate400)
 
                 Spacer(modifier = Modifier.height(14.dp))
 
@@ -751,16 +758,9 @@ fun SandboxScreen(
                     value = uiState.testInputText,
                     onValueChange = onUpdateInput,
                     placeholder = {
-                        Text(
-                            text = "Paste sample ChatGPT response with code or Termux terminal output...",
-                            fontSize = 12.sp,
-                            color = Slate700
-                        )
+                        Text("Enter command (e.g. echo 'Hello Termux') or sample markdown with ```bash code```...", fontSize = 12.sp, color = Slate700)
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(140.dp)
-                        .testTag("test_input_field"),
+                    modifier = Modifier.fillMaxWidth().height(120.dp).testTag("test_input_field"),
                     shape = RoundedCornerShape(10.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = CodeBlockBg,
@@ -772,7 +772,7 @@ fun SandboxScreen(
                     )
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -780,26 +780,20 @@ fun SandboxScreen(
                 ) {
                     OutlinedButton(
                         onClick = {
-                            onUpdateInput(
-                                "Sure! Here is the script:\n```bash\npkg update -y && pkg upgrade -y\npkg install python git -y\necho 'Setup Complete!'\n```\nRun this in Termux."
-                            )
+                            onUpdateInput("Here is the script to run:\n```bash\necho 'AutoBridge connected!'\nuname -a\n```\nRun this in Termux.")
                         },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Sample GPT Code", fontSize = 11.sp, maxLines = 1)
+                        Text("Sample Markdown", fontSize = 11.sp, maxLines = 1)
                     }
 
                     OutlinedButton(
-                        onClick = {
-                            onUpdateInput(
-                                "Reading package lists... Done\nBuilding dependency tree... Done\nAll packages are up to date.\n~ $ python -V\nPython 3.11.8\n~ $ "
-                            )
-                        },
+                        onClick = { onUpdateInput("echo 'Bridge execution test 123'") },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Sample Termux Log", fontSize = 11.sp, maxLines = 1)
+                        Text("Sample Command", fontSize = 11.sp, maxLines = 1)
                     }
                 }
 
@@ -814,29 +808,24 @@ fun SandboxScreen(
                         enabled = uiState.testInputText.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = Color.Black),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("test_gpt_code_button")
+                        modifier = Modifier.weight(1f).testTag("test_gpt_code_button")
                     ) {
-                        Text("Test GPT Code Copy", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Text("Test Code Parser", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                     }
 
                     Button(
-                        onClick = { onTestTermuxOutput(uiState.testInputText) },
+                        onClick = { onTestBridgeCommand(uiState.testInputText) },
                         enabled = uiState.testInputText.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(containerColor = TerminalGreen, contentColor = Color.Black),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("test_termux_relay_button")
+                        modifier = Modifier.weight(1f).testTag("test_termux_relay_button")
                     ) {
-                        Text("Test Termux Relay", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Text("Run on Port 8765", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                     }
                 }
             }
         }
 
-        // Test Output Console Card
         if (uiState.testOutputLog.isNotBlank()) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CodeBlockBg),
@@ -850,22 +839,13 @@ fun SandboxScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "SIMULATION OUTPUT / CLIPBOARD LOG",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = NeonEmerald
-                        )
-
-                        IconButton(
-                            onClick = { onCopyLog(uiState.testOutputLog) },
-                            modifier = Modifier.size(28.dp)
-                        ) {
+                        Text("RESULT OUTPUT", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = NeonEmerald)
+                        IconButton(onClick = { onCopyLog(uiState.testOutputLog) }, modifier = Modifier.size(28.dp)) {
                             Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copy log", tint = Slate400, modifier = Modifier.size(16.dp))
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = uiState.testOutputLog,
                         fontFamily = FontFamily.Monospace,
@@ -880,7 +860,7 @@ fun SandboxScreen(
 }
 
 // -------------------------------------------------------------
-// 3. HISTORY SCREEN
+// 4. HISTORY SCREEN
 // -------------------------------------------------------------
 @Composable
 fun HistoryScreen(
@@ -900,15 +880,12 @@ fun HistoryScreen(
     ) {
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Search Bar & Filter Chips
         OutlinedTextField(
             value = searchQuery,
             onValueChange = onSearchQueryChange,
             placeholder = { Text("Search captured code or outputs...", fontSize = 13.sp, color = Slate400) },
             singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("search_history_field"),
+            modifier = Modifier.fillMaxWidth().testTag("search_history_field"),
             shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedContainerColor = Slate900,
@@ -957,10 +934,7 @@ fun HistoryScreen(
             }
 
             if (capturedItems.isNotEmpty()) {
-                IconButton(
-                    onClick = onClearHistory,
-                    modifier = Modifier.testTag("clear_history_button")
-                ) {
+                IconButton(onClick = onClearHistory, modifier = Modifier.testTag("clear_history_button")) {
                     Icon(imageVector = Icons.Default.Delete, contentDescription = "Clear all history", tint = Slate400)
                 }
             }
@@ -970,21 +944,13 @@ fun HistoryScreen(
 
         if (capturedItems.isEmpty()) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(32.dp),
+                modifier = Modifier.fillMaxSize().padding(32.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.History,
-                        contentDescription = null,
-                        tint = Slate700,
-                        modifier = Modifier.size(48.dp)
-                    )
+                    Icon(imageVector = Icons.Default.History, contentDescription = null, tint = Slate700, modifier = Modifier.size(48.dp))
                     Spacer(modifier = Modifier.height(12.dp))
                     Text("No captured history found", color = Slate400, fontSize = 14.sp)
-                    Text("Code copied from ChatGPT will automatically appear here", color = Slate700, fontSize = 12.sp)
                 }
             }
         } else {
@@ -1019,9 +985,7 @@ fun CapturedItemCard(
         colors = CardDefaults.cardColors(containerColor = Slate900),
         shape = RoundedCornerShape(14.dp),
         border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("captured_item_${item.id}")
+        modifier = Modifier.fillMaxWidth().testTag("captured_item_${item.id}")
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -1029,45 +993,26 @@ fun CapturedItemCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .background(accentColor.copy(alpha = 0.15f))
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
-                        Text(
-                            text = if (isGpt) "CHATGPT CODE" else "TERMUX OUTPUT",
-                            color = accentColor,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text(text = if (isGpt) "CHATGPT CODE" else "TERMUX OUTPUT", color = accentColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
 
                     if (item.languageOrTag.isNotBlank()) {
-                        Text(
-                            text = item.languageOrTag,
-                            fontSize = 11.sp,
-                            color = Slate400,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        Text(text = item.languageOrTag, fontSize = 11.sp, color = Slate400, fontFamily = FontFamily.Monospace)
                     }
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = relativeTime,
-                        fontSize = 11.sp,
-                        color = Slate400
-                    )
-
+                    Text(text = relativeTime, fontSize = 11.sp, color = Slate400)
                     IconButton(onClick = onCopy, modifier = Modifier.size(32.dp)) {
                         Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copy code", tint = accentColor, modifier = Modifier.size(16.dp))
                     }
-
                     if (onDelete != null) {
                         IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                             Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete item", tint = Slate700, modifier = Modifier.size(16.dp))
@@ -1079,11 +1024,7 @@ fun CapturedItemCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(CodeBlockBg)
-                    .padding(12.dp)
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(CodeBlockBg).padding(12.dp)
             ) {
                 Text(
                     text = item.content,
@@ -1100,7 +1041,7 @@ fun CapturedItemCard(
 }
 
 // -------------------------------------------------------------
-// 4. SETTINGS SCREEN
+// 5. SETTINGS SCREEN
 // -------------------------------------------------------------
 @Composable
 fun SettingsScreen(
@@ -1108,6 +1049,7 @@ fun SettingsScreen(
     hasOverlayPermission: Boolean,
     isAccessibilityGranted: Boolean,
     isBatteryIgnored: Boolean,
+    detectedGptPackage: String,
     onUpdateSettings: (BridgeSettings) -> Unit,
     onToggleBackground: (Boolean) -> Unit,
     onToggleScreenOff: (Boolean) -> Unit,
@@ -1117,10 +1059,6 @@ fun SettingsScreen(
     onOpenAccessibilitySettings: () -> Unit,
     onOpenOverlaySettings: () -> Unit
 ) {
-    var promptTemplateText by remember(settings.promptTemplate) {
-        mutableStateOf(settings.promptTemplate)
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1128,14 +1066,22 @@ fun SettingsScreen(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // BACKGROUND & SCREEN-OFF EXECUTION SECTION
-        Text(
-            text = "BACKGROUND & SCREEN-OFF SUPPORT",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = Slate400,
-            letterSpacing = 1.sp
-        )
+        Text("TERMUX LOCAL BRIDGE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Slate900),
+            shape = RoundedCornerShape(14.dp),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Endpoint: http://127.0.0.1:8765/run", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = CyberCyan, fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Controller communicates with your existing local bridge running in Termux via POST /run with JSON {\"command\":\"...\"}.", fontSize = 12.sp, color = Slate400)
+            }
+        }
+
+        Text("BACKGROUND & SCREEN-OFF SUPPORT", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
 
         Card(
             colors = CardDefaults.cardColors(containerColor = Slate900),
@@ -1146,7 +1092,7 @@ fun SettingsScreen(
             Column(modifier = Modifier.padding(16.dp)) {
                 SettingSwitchRow(
                     title = "Work in Background (Foreground Service)",
-                    subtitle = "Maintains persistent notification so Android doesn't kill the app in background.",
+                    subtitle = "Keeps persistent notification alive so automation is never killed by Android.",
                     checked = settings.workInBackground,
                     onCheckedChange = onToggleBackground,
                     testTag = "toggle_work_in_background"
@@ -1156,7 +1102,7 @@ fun SettingsScreen(
 
                 SettingSwitchRow(
                     title = "Work when Screen is Off (WakeLock)",
-                    subtitle = "Keeps CPU awake so code copying and Termux relay continue even when the phone display is turned off.",
+                    subtitle = "Maintains CPU awake state when phone screen is turned off.",
                     checked = settings.screenOffExecution,
                     onCheckedChange = onToggleScreenOff,
                     testTag = "toggle_screen_off_execution"
@@ -1170,35 +1116,20 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text("Disable Battery Optimization", fontWeight = FontWeight.SemiBold, color = Color.White, fontSize = 14.sp)
                         Text(
-                            text = "Disable Battery Optimization",
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = if (isBatteryIgnored) "Unrestricted background access granted." else "Recommended: Whitelist app from battery saver so Android won't freeze it in sleep mode.",
+                            text = if (isBatteryIgnored) "Unrestricted background access active." else "Recommended: Whitelist app from battery saver.",
                             fontSize = 12.sp,
-                            color = if (isBatteryIgnored) NeonEmerald else Slate400,
-                            lineHeight = 16.sp
+                            color = if (isBatteryIgnored) NeonEmerald else Slate400
                         )
                     }
 
                     if (!isBatteryIgnored) {
-                        Button(
-                            onClick = onRequestBatteryOptimization,
-                            colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = Color.Black),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
+                        Button(onClick = onRequestBatteryOptimization, colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = Color.Black), shape = RoundedCornerShape(8.dp)) {
                             Text("Whitelist", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     } else {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(NeonEmerald.copy(alpha = 0.15f))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
+                        Box(modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(NeonEmerald.copy(alpha = 0.15f)).padding(horizontal = 8.dp, vertical = 4.dp)) {
                             Text("Active", color = NeonEmerald, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
@@ -1206,14 +1137,7 @@ fun SettingsScreen(
             }
         }
 
-        // CHATGPT CODE EXTRACTION FILTERING
-        Text(
-            text = "CHATGPT CODE FILTERING",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = Slate400,
-            letterSpacing = 1.sp
-        )
+        Text("CODE EXTRACTION & RELAY", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
 
         Card(
             colors = CardDefaults.cardColors(containerColor = Slate900),
@@ -1223,64 +1147,18 @@ fun SettingsScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 SettingSwitchRow(
-                    title = "Only Copy Generated Code (Copy Logo/Button)",
-                    subtitle = "Strictly targets ChatGPT code blocks with the 'Copy code' button or logo. Normal text/messages are never copied.",
+                    title = "Pure Code Only (Strip Fences & Chat)",
+                    subtitle = "Strips markdown ```, headings, explanations. Never sends chat text to Termux.",
                     checked = settings.strictCodeButtonOnly,
                     onCheckedChange = onToggleStrictCode,
-                    testTag = "toggle_strict_code_only"
-                )
-
-                HorizontalDivider(color = Slate800, modifier = Modifier.padding(vertical = 12.dp))
-
-                SettingSwitchRow(
-                    title = "Auto-Copy ChatGPT Code",
-                    subtitle = "Automatically copies generated code directly into the system clipboard.",
-                    checked = settings.autoCopyChatGptCode,
-                    onCheckedChange = { onUpdateSettings(settings.copy(autoCopyChatGptCode = it)) },
-                    testTag = "toggle_auto_copy_gpt"
-                )
-            }
-        }
-
-        // AUTOMATION SETTINGS
-        Text(
-            text = "TERMUX AUTOMATION SETTINGS",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = Slate400,
-            letterSpacing = 1.sp
-        )
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Slate900),
-            shape = RoundedCornerShape(14.dp),
-            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                SettingSwitchRow(
-                    title = "Auto-Send Termux Output to ChatGPT",
-                    subtitle = "Captures stdout/stderr from Termux and prepares/sends prompt back to ChatGPT.",
-                    checked = settings.autoSendTermuxToGpt,
-                    onCheckedChange = { onUpdateSettings(settings.copy(autoSendTermuxToGpt = it)) },
-                    testTag = "toggle_auto_send_termux"
-                )
-
-                HorizontalDivider(color = Slate800, modifier = Modifier.padding(vertical = 12.dp))
-
-                SettingSwitchRow(
-                    title = "Auto-Switch to ChatGPT",
-                    subtitle = "Automatically brings ChatGPT to front when Termux output is captured.",
-                    checked = settings.autoSwitchApp,
-                    onCheckedChange = { onUpdateSettings(settings.copy(autoSwitchApp = it)) },
-                    testTag = "toggle_auto_switch_app"
+                    testTag = "toggle_strict_code"
                 )
 
                 HorizontalDivider(color = Slate800, modifier = Modifier.padding(vertical = 12.dp))
 
                 SettingSwitchRow(
                     title = "Haptic Vibration Feedback",
-                    subtitle = "Vibrate briefly whenever code is copied or sent.",
+                    subtitle = "Vibrate briefly whenever code is captured, executed, or relayed.",
                     checked = settings.vibrationFeedback,
                     onCheckedChange = { onUpdateSettings(settings.copy(vibrationFeedback = it)) },
                     testTag = "toggle_vibration"
@@ -1288,119 +1166,7 @@ fun SettingsScreen(
             }
         }
 
-        // Custom Prompt Template
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Slate900),
-            shape = RoundedCornerShape(14.dp),
-            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Termux Output Prompt Template",
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    fontSize = 14.sp
-                )
-                Text(
-                    text = "Customize the message sent to ChatGPT when forwarding Termux output. Use {OUTPUT} placeholder.",
-                    fontSize = 12.sp,
-                    color = Slate400
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                OutlinedTextField(
-                    value = promptTemplateText,
-                    onValueChange = {
-                        promptTemplateText = it
-                        onUpdateSettings(settings.copy(promptTemplate = it))
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(120.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = CodeBlockBg,
-                        unfocusedContainerColor = CodeBlockBg,
-                        focusedBorderColor = CyberCyan,
-                        unfocusedBorderColor = Slate700,
-                        focusedTextColor = Slate200,
-                        unfocusedTextColor = Slate200
-                    )
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(
-                    onClick = {
-                        promptTemplateText = BridgeSettings.DEFAULT_PROMPT_TEMPLATE
-                        onUpdateSettings(settings.copy(promptTemplate = BridgeSettings.DEFAULT_PROMPT_TEMPLATE))
-                    },
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Reset to Default Template", fontSize = 11.sp)
-                }
-            }
-        }
-
-        // Floating Overlay Control
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Slate900),
-            shape = RoundedCornerShape(14.dp),
-            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Slate800)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Floating Quick-Action Pill",
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = "Display a draggable floating button on top of Termux to 1-tap capture & relay output.",
-                            fontSize = 12.sp,
-                            color = Slate400
-                        )
-                    }
-
-                    Switch(
-                        checked = settings.floatingOverlayEnabled,
-                        onCheckedChange = { enabled ->
-                            if (enabled && !hasOverlayPermission) {
-                                onOpenOverlaySettings()
-                            } else {
-                                onToggleOverlay(enabled)
-                            }
-                        }
-                    )
-                }
-
-                if (!hasOverlayPermission) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Requires 'Display over other apps' permission",
-                        fontSize = 11.sp,
-                        color = AmberAlert
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedButton(
-                        onClick = onOpenOverlaySettings,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Grant Overlay Permission", fontSize = 11.sp)
-                    }
-                }
-            }
-        }
-
-        // Accessibility Service Deep Link
+        // Accessibility Deep Link
         Button(
             onClick = onOpenAccessibilitySettings,
             colors = ButtonDefaults.buttonColors(containerColor = Slate800, contentColor = CyberCyan),
@@ -1409,8 +1175,28 @@ fun SettingsScreen(
         ) {
             Icon(imageVector = Icons.Default.Security, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("System Accessibility Settings", fontWeight = FontWeight.SemiBold)
+            Text("Open System Accessibility Settings", fontWeight = FontWeight.SemiBold)
         }
+    }
+}
+
+@Composable
+fun StatusBadge(text: String, color: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.15f))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    ) {
+        Text(text = text, color = color, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+fun StatItem(label: String, value: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text = value, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = color)
+        Text(text = label, fontSize = 11.sp, color = Slate400)
     }
 }
 
